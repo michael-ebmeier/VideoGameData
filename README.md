@@ -29,6 +29,32 @@ references left as numeric IDs). The script stays within IGDB's 4 requests/secon
 saves after every page, so you can stop it (Ctrl+C) and re-run the same command to resume.
 When it finishes it compares each file's record count with IGDB's reported total.
 
+## Keeping it up to date
+
+After the first full download, you don't need to download everything again. One command
+fetches only what IGDB changed since last time, merges it into your files, and rebuilds the
+database:
+
+```bash
+python update.py
+```
+
+(Stop the explorer first; it holds the database open.) What it does:
+
+- `python fetch_igdb.py --update` asks IGDB for records with an `updated_at` newer than your
+  last run and merges them into the existing `.jsonl` files: changed records are replaced, new
+  ones added. It also finishes any interrupted download. Small tables without `updated_at` are
+  just re-downloaded. When each table was last fetched is kept in `data/igdb/state.json`.
+- Each run re-checks the last hour as a safety margin, so the "changed or new" count is never
+  exactly zero. That's expected.
+- **Deleted records:** IGDB doesn't announce deletions, so `--update` can't see them. It warns
+  when a file has more records than IGDB lists. Fix that table with a clean re-download, which
+  swaps the file in only when it finishes:
+  ```bash
+  python fetch_igdb.py --refresh --endpoints games
+  ```
+  Doing this for `games` every few months is plenty.
+
 ## Query
 
 ```bash
