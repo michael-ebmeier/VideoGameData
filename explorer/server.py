@@ -60,6 +60,12 @@ TTB_SUB = ('(SELECT game_id, normally, hastily, completely, "count" AS reports F
            'FROM game_time_to_beats) WHERE rn = 1)')
 TTB10 = "CAST(round(tb.normally / 360.0) AS INTEGER)"     # normal playthrough in tenths of an hour
 
+# The default "scope" is games that carry an ESRB age rating (E, E10+, T or M). Everything else (unrated
+# games, shovelware, adult titles, ESRB 'Adults Only' and 'Rating Pending') is the opt-in "wild west".
+# The ids of the in-scope games live in an in-memory table: the database file itself is read-only, and
+# unlike a TEMP table an ordinary memory table is visible from every request's cursor.
+RATED = "memory.main.rated_games"
+
 
 def clean(v):
     """Make a value JSON-safe (no NaN/inf, no odd types)."""
@@ -100,6 +106,66 @@ class Store:
                 self.ttb_rows = self.con.execute("SELECT count(*) FROM game_time_to_beats").fetchone()[0]
         self._cache = {}
         self._lock = threading.Lock()
+        self.scope_ok, self.rated_n, self.all_n, self.scope_note = False, 0, 0, ""
+        try:
+            self._build_scope()
+        except Exception as e:      # a surprise in the ratings tables must never take the explorer down
+            self.scope_ok = False
+            self.scope_note = f"could not read the age ratings ({str(e)[:120]}); every game is shown"
+        if self.scope_note:
+            print("Note:", self.scope_note, file=sys.stderr)
+
+    def _build_scope(self):
+        """Find the games with an ESRB rating other than Adults Only / Rating Pending.
+
+        IGDB has described age ratings two ways and this reads either: the current one (an
+        `organization` id plus a `rating_category`) and the older one (`category` 1 = ESRB, and a numeric
+        `rating` where 6 = Rating Pending and 12 = Adults Only)."""
+        self.all_n = self.con.execute("SELECT count(*) FROM games WHERE name IS NOT NULL").fetchone()[0]
+        if "age_ratings" not in self.tables or "age_ratings" not in self.game_cols:
+            self.scope_note = "no age ratings in this data; every game is shown"
+            return
+        ar = {r[0]: r[1] for r in self.con.execute("DESCRIBE age_ratings").fetchall()}
+        esrb = []
+        if "organization" in ar and "age_rating_organizations" in self.tables:
+            ids = [r[0] for r in self.con.execute(
+                "SELECT id FROM age_rating_organizations WHERE upper(trim(name::VARCHAR)) = 'ESRB'").fetchall()]
+            if ids:
+                esrb.append("ar.organization IN (" + ",".join(str(int(i)) for i in ids) + ")")
+        if "category" in ar:
+            esrb.append("ar.category = 1")
+        if not esrb:
+            self.scope_note = "could not tell which age ratings are ESRB; every game is shown"
+            return
+        keep, join = [], ""
+        cat = {r[0] for r in self.con.execute("DESCRIBE age_rating_categories").fetchall()} if "age_rating_categories" in self.tables else set()
+        if "rating_category" in ar and "rating" in cat:
+            join = "LEFT JOIN age_rating_categories cat ON cat.id = ar.rating_category"
+            keep.append("NOT regexp_matches(lower(trim(coalesce(cat.rating::VARCHAR, ''))), '^(ao|rp)([^a-z0-9]|$)|adults only|pending')")
+        if "rating" in ar:
+            keep.append("coalesce(ar.rating::VARCHAR, '') NOT IN ('6', '12')")
+        where = "(" + " OR ".join(esrb) + ")" + "".join(f" AND {k}" for k in keep)
+        self.con.execute(f"DROP TABLE IF EXISTS {RATED}")
+        self.con.execute(
+            f"CREATE TABLE {RATED} AS SELECT DISTINCT g.id FROM "
+            f"(SELECT id, unnest(age_ratings) AS arid FROM games WHERE age_ratings IS NOT NULL AND name IS NOT NULL) g "
+            f"JOIN age_ratings ar ON ar.id = g.arid {join} WHERE {where}")
+        self.rated_n = self.con.execute(f"SELECT count(*) FROM {RATED}").fetchone()[0]
+        self.scope_ok = self.rated_n > 0
+        if not self.scope_ok:
+            self.scope_note = "found no ESRB-rated games (is the age-rating data in an unexpected layout?); every game is shown"
+        elif self.rated_n < 0.01 * max(1, self.all_n):
+            self.scope_note = f"only {self.rated_n:,} of {self.all_n:,} games matched as ESRB-rated; check the age-rating data"
+
+    def scope_of(self, value):
+        """'rated' (the default) or 'all'. Without usable ratings everything is 'all'."""
+        return "all" if (value == "all" or not self.scope_ok) else "rated"
+
+    def scope_sql(self, scope):
+        return f"g.id IN (SELECT id FROM {RATED})" if scope == "rated" and self.scope_ok else ""
+
+    def scope_info(self, scope):
+        return {"available": self.scope_ok, "scope": scope, "rated": self.rated_n, "all": self.all_n}
 
     # -- helpers -----------------------------------------------------------
     def rows(self, sql, params=()):
@@ -184,6 +250,10 @@ class Store:
                 where.append(f"{self.ttb10()} < ?")
                 params.append(int(m.group(2)) * 10)
 
+        scope = self.scope_of((q.get("scope") or [""])[0])
+        if self.scope_sql(scope):
+            where.append(self.scope_sql(scope))
+
         sort = (q.get("sort") or ["popular"])[0]
         if sort not in SORTS:
             sort = "popular"
@@ -212,7 +282,8 @@ class Store:
         return {"total": total, "page": page, "page_size": PAGE_SIZE,
                 "games": [self.game_card(r) for r in rows]}
 
-    def game(self, game_id):
+    def game(self, game_id, scope="rated"):
+        scope = self.scope_of(scope)
         found = self.rows("SELECT * FROM games WHERE id = ?", [game_id])
         if not found:
             return None
@@ -233,6 +304,7 @@ class Store:
             "perspectives": self.names("player_perspectives", g.get("player_perspectives")),
             "cover": None, "screenshots": [], "developers": [], "publishers": [], "similar": [],
             "time_to_beat": None,
+            "rated": (bool(self.rows(f"SELECT 1 AS x FROM {RATED} WHERE id = ?", [game_id])) if self.scope_ok else None),
         }
         if self.has_ttb:
             r = self.rows(f"SELECT hastily, normally, completely, reports FROM {TTB_SUB} tb WHERE game_id = ?", [game_id])
@@ -256,8 +328,9 @@ class Store:
         similar = as_int_list(g.get("similar_games"))[:12]
         if similar:
             marks = ",".join("?" * len(similar))
+            sc = self.scope_sql(scope)
             cards = {r["id"]: r for r in self.rows(
-                f"{self.card_select()} WHERE g.id IN ({marks})", similar)}
+                f"{self.card_select()} WHERE g.id IN ({marks})" + (f" AND {sc}" if sc else ""), similar)}
             out["similar"] = [self.game_card(cards[i]) for i in similar if i in cards]
         return out
 
@@ -267,7 +340,9 @@ class Store:
         return self._cached("columns", self._columns)
 
     def _columns(self):
-        keys = ("id", "name", "year", "rel", "rating", "votes", "cover", "genres", "platforms", "ttb", "ttbn")
+        keys = ["id", "name", "year", "rel", "rating", "votes", "cover", "genres", "platforms", "ttb", "ttbn"]
+        if self.scope_ok:
+            keys.append("rated")
         cols = {k: [] for k in keys}
         join, cover = self.cover_join()
         sql = (f"SELECT g.id, g.name, {self.YEAR} AS year, "
@@ -275,8 +350,9 @@ class Store:
                f"CAST(round({self.col('total_rating')} * 100) AS INTEGER) AS rating, "
                f"{self.col('total_rating_count', 'BIGINT')} AS votes, {cover} AS cover, "
                f"{self.col('genres', 'BIGINT[]')} AS genres, {self.col('platforms', 'BIGINT[]')} AS platforms, "
-               f"{self.ttb10()} AS ttb, {self.reports()} AS ttbn "
-               f"FROM games g {join} {self.ttb_join()} WHERE g.name IS NOT NULL ORDER BY g.id")
+               f"{self.ttb10()} AS ttb, {self.reports()} AS ttbn"
+               + (f", CASE WHEN g.id IN (SELECT id FROM {RATED}) THEN 1 ELSE 0 END AS rated" if self.scope_ok else "")
+               + f" FROM games g {join} {self.ttb_join()} WHERE g.name IS NOT NULL ORDER BY g.id")
         cur = self.con.cursor()
         cur.execute("USE igdb")
         cur.execute(sql)
@@ -289,58 +365,65 @@ class Store:
                     cols[key].append((list(value) if value else []) if key in ("genres", "platforms") else value)
         return cols
 
-    def facets(self):
-        return self._cached("facets", self._facets)
+    def facets(self, scope="rated"):
+        scope = self.scope_of(scope)
+        return self._cached(f"facets:{scope}", lambda: self._facets(scope))
 
-    def _facets(self):
+    def _facets(self, scope):
+        sc = self.scope_sql(scope)
         out = {"genres": [], "platforms": []}
         for key, table, column in (("genres", "genres", "genres"), ("platforms", "platforms", "platforms")):
             if table in self.tables and column in self.game_cols:
                 out[key] = self.rows(
                     f"SELECT t.id, t.name, count(*) AS n FROM {table} t "
-                    f"JOIN (SELECT unnest({column}) AS ref FROM games) x ON x.ref = t.id "
+                    f"JOIN (SELECT unnest({column}) AS ref FROM games g" + (f" WHERE {sc}" if sc else "") + ") x ON x.ref = t.id "
                     f"GROUP BY t.id, t.name ORDER BY n DESC, t.id")
         out["platforms"] = [p for p in out["platforms"] if p["n"] >= 50]
         out["genres"].sort(key=lambda r: r["name"] or "")
         out["has_time_to_beat"] = self.ttb_rows > 0
+        out["scope"] = self.scope_info(scope)
         return out
 
-    def stats(self):
-        return self._cached("stats", self._stats)
+    def stats(self, scope="rated"):
+        scope = self.scope_of(scope)
+        return self._cached(f"stats:{scope}", lambda: self._stats(scope))
 
-    def _stats(self):
-        s = {}
+    def _stats(self, scope):
+        sc = self.scope_sql(scope)
+        wh = f" WHERE {sc}" if sc else ""          # for queries with no other condition
+        an = f" AND {sc}" if sc else ""            # for queries that already have one
+        s = {"scope": self.scope_info(scope)}
         total = self.rows(
             f"SELECT count(*) AS games, count({self.col('total_rating')}) AS rated, "
             f"count(g.cover) AS covered, "
             f"min({self.YEAR}) FILTER (WHERE g.first_release_date <= ?) AS first_year, "
             f"max({self.YEAR}) FILTER (WHERE g.first_release_date <= ?) AS last_year "
-            "FROM games g", [int(time.time())] * 2)[0]
+            f"FROM games g{wh}", [int(time.time())] * 2)[0]
         s["totals"] = {k: clean(v) for k, v in total.items()}
         this_year = time.gmtime().tm_year
         s["totals"]["timed"] = 0
         s["ttb_buckets"], s["ttb_by_genre"], s["ttb_by_year"] = [], [], []
         if self.has_ttb:
-            self._ttb_stats(s, this_year)
+            self._ttb_stats(s, this_year, an)
         s["per_year"] = self.rows(
             f"SELECT {self.YEAR} AS label, count(*) AS value FROM games g "
-            f"WHERE g.first_release_date IS NOT NULL GROUP BY 1 HAVING label BETWEEN 1970 AND {this_year} ORDER BY 1")
+            f"WHERE g.first_release_date IS NOT NULL{an} GROUP BY 1 HAVING label BETWEEN 1970 AND {this_year} ORDER BY 1")
         if "total_rating" in self.game_cols:
             s["ratings"] = self.rows(
                 "SELECT least(floor(g.total_rating / 10), 9)::INTEGER * 10 AS label, count(*) AS value "
-                "FROM games g WHERE g.total_rating IS NOT NULL AND g.total_rating_count >= 5 GROUP BY 1 ORDER BY 1")
+                f"FROM games g WHERE g.total_rating IS NOT NULL AND g.total_rating_count >= 5{an} GROUP BY 1 ORDER BY 1")
         else:
             s["ratings"] = []
         for key in ("genres", "platforms"):
-            facets = self._facets()[key] if self.tables >= {key} else []
+            facets = self._facets(scope)[key] if self.tables >= {key} else []
             top = sorted(facets, key=lambda r: -r["n"])[:15]
             s[f"top_{key}"] = [{"label": r["name"], "value": r["n"]} for r in top]
         return s
 
-    def _ttb_stats(self, s, this_year):
+    def _ttb_stats(self, s, this_year, an=""):
         """Time-to-beat charts: only games whose normal-playthrough figure has MIN_REPORTS+ reports."""
         base = (f"FROM games g {self.ttb_join()} "
-                f"WHERE tb.normally IS NOT NULL AND tb.reports >= {MIN_REPORTS}")
+                f"WHERE tb.normally IS NOT NULL AND tb.reports >= {MIN_REPORTS}{an}")
         s["totals"]["timed"] = self.rows(f"SELECT count(*) AS n {base}")[0]["n"]
         if not s["totals"]["timed"]:
             return
@@ -438,13 +521,14 @@ class App:
                 return self.json(start_response, store.search(q))
             if path == "/api/columns":
                 return self.json(start_response, store.columns(), cache=3600)
+            scope = (q.get("scope") or [""])[0]
             if path == "/api/facets":
-                return self.json(start_response, store.facets(), cache=3600)
+                return self.json(start_response, store.facets(scope), cache=3600)
             if path == "/api/stats":
-                return self.json(start_response, store.stats(), cache=3600)
+                return self.json(start_response, store.stats(scope), cache=3600)
             m = re.fullmatch(r"/api/game/(\d+)", path)
             if m:
-                game = store.game(int(m.group(1)))
+                game = store.game(int(m.group(1)), scope)
                 return self.json(start_response, game) if game else self.json(start_response, {"error": "not found"}, 404)
             return self.json(start_response, {"error": "not found"}, 404)
         except Exception as e:  # keep serving; the UI shows the message

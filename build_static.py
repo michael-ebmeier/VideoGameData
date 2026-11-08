@@ -7,14 +7,17 @@ Python app, database or Passenger on the host. The visitor's browser does the se
   python build_static.py --out site                    # a local folder to try it out
 
 It reads only the IGDB tables the explorer shows (games, covers, genres, platforms, themes,
-game_modes, player_perspectives, companies, involved_companies, screenshots, game_time_to_beats) from
+game_modes, player_perspectives, companies, involved_companies, screenshots, game_time_to_beats,
+age_ratings and the age-rating organizations/categories) from
 data/igdb/*.jsonl and writes into --out:
 
   index.html, static-api.js, analysis.js   the page (same UI as `python explorer/server.py`)
   .htaccess                      Apache settings (only if none exists yet; see below)
   data/manifest.json             points at the current data version; always re-checked
   data/<version>/games.dat       one compact, gzipped table of every game (search/filter/sort)
-  data/<version>/facets.json     genre and platform lists;  stats.json  the Stats page
+  data/<version>/facets.json     genre and platform lists;  stats.json  the Stats page.
+                                 These describe the default scope (games with an ESRB rating);
+                                 facets_all.json / stats_all.json describe every game ("wild west").
   data/<version>/d/<n>.dat       game details, 500 games per file, loaded on demand
 
 Publishing is safe to run while people browse: the new version is written to its own folder
@@ -56,7 +59,7 @@ TABLES = {
         "total_rating_count": "BIGINT", "rating": "DOUBLE", "aggregated_rating": "DOUBLE",
         "url": "VARCHAR", "cover": "BIGINT", "genres": "BIGINT[]", "platforms": "BIGINT[]",
         "themes": "BIGINT[]", "game_modes": "BIGINT[]", "player_perspectives": "BIGINT[]",
-        "similar_games": "BIGINT[]",
+        "similar_games": "BIGINT[]", "age_ratings": "BIGINT[]",
     },
     "covers": {"id": "BIGINT", "game": "BIGINT", "image_id": "VARCHAR"},
     "genres": {"id": "BIGINT", "name": "VARCHAR"},
@@ -68,6 +71,12 @@ TABLES = {
     "involved_companies": {"id": "BIGINT", "game": "BIGINT", "company": "BIGINT",
                            "developer": "BOOLEAN", "publisher": "BOOLEAN"},
     "screenshots": {"id": "BIGINT", "game": "BIGINT", "image_id": "VARCHAR"},
+    # Age ratings decide the default scope (ESRB-rated games). Both of IGDB's layouts are declared; the
+    # fields a dump doesn't have just come out NULL. `rating` is text so either kind of value loads.
+    "age_ratings": {"id": "BIGINT", "organization": "BIGINT", "category": "BIGINT",
+                    "rating_category": "BIGINT", "rating": "VARCHAR"},
+    "age_rating_organizations": {"id": "BIGINT", "name": "VARCHAR"},
+    "age_rating_categories": {"id": "BIGINT", "organization": "BIGINT", "rating": "VARCHAR"},
     "game_time_to_beats": {"id": "BIGINT", "game_id": "BIGINT", "hastily": "BIGINT",
                            "normally": "BIGINT", "completely": "BIGINT", "count": "BIGINT"},
 }
@@ -202,8 +211,18 @@ def build_data(src, out, keep):
         write_gz(staging / "games.dat", cols)
         del cols
         log(f"  {n:,} games")
-        write_json(staging / "facets.json", store.facets())
-        write_json(staging / "stats.json", store.stats())
+        if store.scope_ok:
+            write_json(staging / "facets.json", store.facets("rated"))
+            write_json(staging / "stats.json", store.stats("rated"))
+            write_json(staging / "facets_all.json", store.facets("all"))
+            write_json(staging / "stats_all.json", store.stats("all"))
+            log(f"  default scope: {store.rated_n:,} of {store.all_n:,} games have an ESRB rating "
+                f"({100 * store.rated_n / max(1, store.all_n):.0f}%)")
+        else:
+            write_json(staging / "facets.json", store.facets("all"))
+            write_json(staging / "stats.json", store.stats("all"))
+        if store.scope_note:
+            log(f"  WARNING: {store.scope_note}")
         del store
 
         final = data_dir / version

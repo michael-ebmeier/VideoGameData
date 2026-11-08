@@ -40,6 +40,8 @@
       cover: d.cover,
       genres: d.genres,
       platforms: d.platforms,
+      // 1 for games with an ESRB rating (the default scope); missing when the data has no ratings
+      rated: d.rated ? Int8Array.from(d.rated) : null,
     };
   }
 
@@ -55,11 +57,15 @@
   const transform = (key, raw) => { const v = METRICS[key].value(raw); return METRICS[key].log ? Math.log10(v) : v; };
 
   /* Per-measure integer columns (NULL where a game doesn't count), built once per table. */
-  function prepare(G) {
-    if (G._an) return G._an;
+  function prepare(G, scoped) {
+    const key = scoped && G.rated ? "rated" : "all";
+    G._an = G._an || {};
+    if (G._an[key]) return G._an[key];
     const n = G.n, raw = {}, max = {};
+    const skip = key === "rated" ? G.rated : null;           // games outside the scope count for nothing
     for (const k of Object.keys(METRICS)) { raw[k] = new Int32Array(n).fill(NULL); max[k] = 0; }
     for (let i = 0; i < n; i++) {
+      if (skip && !skip[i]) continue;
       const y = G.year[i];
       if (y !== NULL && y >= 1970 && y <= THIS_YEAR) raw.year[i] = y;
       if (G.rating[i] >= 0 && G.votes[i] >= MIN_RATINGS) raw.rating[i] = G.rating[i];
@@ -69,7 +75,7 @@
       if (np >= 1) raw.platforms[i] = np;
     }
     for (const k of Object.keys(METRICS)) for (let i = 0; i < n; i++) if (raw[k][i] > max[k]) max[k] = raw[k][i];
-    return (G._an = { raw, max, pairs: {} });
+    return (G._an[key] = { raw, max, pairs: {} });
   }
 
   /* ----- statistics ----- */
@@ -96,8 +102,8 @@
   }
 
   /* Both coefficients for a pair of measures, over the games that count for both. */
-  function pairData(G, a, b, keepPoints) {
-    const A = prepare(G), ra = A.raw[a], rb = A.raw[b];
+  function pairData(G, a, b, keepPoints, scoped) {
+    const A = prepare(G, scoped), ra = A.raw[a], rb = A.raw[b];
     const cached = A.pairs[a + "|" + b];
     if (cached && !keepPoints) return cached;
     let m = 0;
@@ -126,8 +132,8 @@
   /* ----- the three kinds of comparison ----- */
 
   /* Two measures: scatter of a sample of games plus the coefficients over all of them. */
-  function scatter(G, xk, yk) {
-    const d = pairData(G, xk, yk, true);
+  function scatter(G, xk, yk, scoped) {
+    const d = pairData(G, xk, yk, true, scoped);
     const out = { type: "scatter", xk, yk, n: d.n, pearson: d.pearson, spearman: d.spearman, slope: d.slope, intercept: d.intercept, points: [] };
     if (d.n < 3) return out;
     const take = Math.min(MAX_POINTS, d.n), step = d.n / take;
@@ -151,8 +157,8 @@
   const round1 = v => Math.round(v * 10) / 10;
 
   /* A genre or platform against one measure: the average (or median) per category. */
-  function categoryBars(G, facets, catKey, numKey, agg) {
-    const A = prepare(G), raw = A.raw[numKey];
+  function categoryBars(G, facets, catKey, numKey, agg, scoped) {
+    const A = prepare(G, scoped), raw = A.raw[numKey];
     const lists = catKey === "genre" ? G.genres : G.platforms;
     const names = new Map((catKey === "genre" ? facets.genres : facets.platforms).map(r => [r.id, r.name]));
     const by = new Map(), all = [];
@@ -171,13 +177,15 @@
   }
 
   /* Two categories: how many games have both (a genre's overlap with itself is genre co-occurrence). */
-  function crossTab(G, facets, rowKey, colKey, show) {
+  function crossTab(G, facets, rowKey, colKey, show, scoped) {
     const list = key => (key === "genre" ? facets.genres : facets.platforms).slice().sort((p, q) => q.n - p.n || p.name.localeCompare(q.name));
     const rows = list(rowKey).slice(0, 12), cols = list(colKey).slice(0, 12);
     const rowAt = new Map(rows.map((r, i) => [r.id, i])), colAt = new Map(cols.map((c, j) => [c.id, j]));
     const cells = rows.map(() => new Array(cols.length).fill(0));
     const rl = rowKey === "genre" ? G.genres : G.platforms, cl = colKey === "genre" ? G.genres : G.platforms;
+    const skip = scoped && G.rated ? G.rated : null;
     for (let i = 0; i < G.n; i++) {
+      if (skip && !skip[i]) continue;
       for (const a of rl[i]) { const r = rowAt.get(a); if (r === undefined) continue;
         for (const b of cl[i]) { const c = colAt.get(b); if (c !== undefined) cells[r][c]++; } }
     }
@@ -187,12 +195,12 @@
   }
 
   /* Every pair among the chosen measures: the correlation matrix. */
-  function correlationMatrix(G, keys) {
+  function correlationMatrix(G, keys, scoped) {
     const cells = keys.map(() => keys.map(() => null));
     keys.forEach((a, i) => keys.forEach((b, j) => {
       if (i === j) return;
       const [p, q] = i < j ? [a, b] : [b, a];
-      cells[i][j] = pairData(G, p, q, false);
+      cells[i][j] = pairData(G, p, q, false, scoped);
     }));
     return { keys, cells };
   }

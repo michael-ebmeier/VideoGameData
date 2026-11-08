@@ -42,8 +42,18 @@
     G.orders = {};
     return G;
   });
-  const facets = () => once("facets", async () => parse(await bytes(await versioned("facets.json"))));
-  const stats = () => once("stats", async () => parse(await bytes(await versioned("stats.json"))));
+  // facets.json / stats.json describe the default scope (games with an ESRB rating). When the data has
+  // ratings there is also facets_all.json / stats_all.json for "wild west" (every game).
+  const defaultFacets = () => once("facets", async () => parse(await bytes(await versioned("facets.json"))));
+  const defaultStats = () => once("stats", async () => parse(await bytes(await versioned("stats.json"))));
+  const facets = scope => (scope !== "all" ? defaultFacets() : once("facets-all", async () => {
+    const base = await defaultFacets();
+    return base.scope && base.scope.available ? parse(await bytes(await versioned("facets_all.json"))) : base;
+  }));
+  const stats = scope => (scope !== "all" ? defaultStats() : once("stats-all", async () => {
+    const base = await defaultStats();
+    return base.scope && base.scope.available ? parse(await bytes(await versioned("stats_all.json"))) : base;
+  }));
 
   /* ----- search ----- */
   function cardAt(G, i) {
@@ -94,6 +104,7 @@
     const minVotes = /^\d+$/.test(p.min_votes || "") ? +p.min_votes : (sort === "rating" ? 10 : 0);
     const today = Math.floor(Date.now() / 86400000);
     const page = /^\d+$/.test(p.page || "") ? Math.max(1, +p.page) : 1;
+    const rated = p.scope !== "all" && G.rated ? G.rated : null;       // default scope: games with an ESRB rating
 
     const start = (page - 1) * PAGE, end = start + PAGE;
     const order = orderFor(G, sort);
@@ -101,6 +112,7 @@
     let total = 0;
     for (let k = 0; k < order.length; k++) {
       const i = order[k];
+      if (rated && !rated[i]) continue;
       if (text && !G.lower[i].includes(text)) continue;
       if (genre !== null && !G.genres[i].includes(genre)) continue;
       if (platform !== null && !G.platforms[i].includes(platform)) continue;
@@ -127,30 +139,31 @@
     return -1;
   }
 
-  async function game(id) {
+  async function game(id, p) {
     const G = await games();
     const i = indexOf(G, id);
     if (i < 0) throw new Error("not found");
     const shard = Math.floor(id / SHARD);
     const data = await once(`shard${shard}`, async () => parse(await bytes(await versioned(`d/${shard}.dat`))));
     const d = data[String(id)] || {};
-    const similar = (d.similar_ids || []).map(sid => indexOf(G, sid)).filter(k => k >= 0).map(k => cardAt(G, k));
+    const rated = !p || p.scope === "all" || !G.rated ? null : G.rated;
+    const similar = (d.similar_ids || []).map(sid => indexOf(G, sid)).filter(k => k >= 0 && (!rated || rated[k])).map(k => cardAt(G, k));
     return {
       id, name: G.name[i], slug: null, summary: null, storyline: null, release: null, rating: null,
       votes: null, user_rating: null, critic_rating: null, url: null,
       genres: [], genre_ids: [], platforms: [], platform_ids: [], themes: [], modes: [], perspectives: [],
       screenshots: [], developers: [], publishers: [], time_to_beat: null,
-      ...d, cover: G.cover[i] || null, similar,
+      ...d, cover: G.cover[i] || null, similar, rated: G.rated ? !!G.rated[i] : null,
     };
   }
 
   /* ----- the same entry point the UI already calls ----- */
   async function api(path, params) {
     if (path === "api/games") return search(params);
-    if (path === "api/facets") return facets();
-    if (path === "api/stats") return stats();
+    if (path === "api/facets") return facets(params.scope === "all" ? "all" : "rated");
+    if (path === "api/stats") return stats(params.scope === "all" ? "all" : "rated");
     const m = /^api\/game\/(\d+)$/.exec(path);
-    if (m) return game(+m[1]);
+    if (m) return game(+m[1], params);
     throw new Error("not found");
   }
 
