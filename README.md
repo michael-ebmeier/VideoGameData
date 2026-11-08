@@ -49,6 +49,21 @@ con.sql("""
 Fields that point at other records (`genres`, `platforms`, `cover`, ...) are IDs; join them
 to the matching table (see the header of `load_duckdb.py`). `data/` is gitignored.
 
+## Explore in the browser
+
+```bash
+python explorer/server.py        # opens http://127.0.0.1:8000
+```
+
+A small local web app over `data/igdb.duckdb` (run `load_duckdb.py` first): a cover grid with
+search, genre/platform/year filters and sorting; a page per game (rating, platforms, developers,
+screenshots, similar games); and a **Stats** tab with a few charts. Everything runs on your
+machine and the server only listens on `127.0.0.1`. Cover art loads from IGDB's image host in your
+browser, so covers appear only once the `covers` endpoint has been downloaded and you're online;
+otherwise you get title placeholders. Options: `--port 9000`, `--no-open`, `--db PATH`.
+
+Stop the server with Ctrl+C. Rebuild the database (`load_duckdb.py`) only while it is stopped.
+
 ## Terms
 
 IGDB data is free for non-commercial use under Twitch's terms. Check

@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoGameData Explorer</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14171c;
+    --surface: #1c2128;
+    --surface-2: #242b34;
+    --line: #2c343e;
+    --text: #e8eaed;
+    --text-2: #b4bcc6;
+    --muted: #8b95a1;
+    --accent: #3987e5;      /* single data series colour (dark step) */
+    --accent-ink: #ffffff;
+    --star: #f2b705;
+    --radius: 8px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --surface-2: #eceef1;
+      --line: #dfe3e8;
+      --text: #14171c;
+      --text-2: #3f4852;
+      --muted: #5b6670;
+      --accent: #2a78d6;    /* single data series colour (light step) */
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: inherit; text-decoration: none; }
+  button, select, input { font: inherit; color: inherit; }
+
+  header.top {
+    position: sticky; top: 0; z-index: 10; background: var(--surface);
+    border-bottom: 1px solid var(--line);
+  }
+  .top-inner {
+    max-width: 1200px; margin: 0 auto; padding: 10px 16px;
+    display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+  }
+  .brand { font-weight: 700; letter-spacing: .2px; }
+  .brand span { color: var(--accent); }
+  nav { display: flex; gap: 16px; }
+  nav a { color: var(--text-2); padding: 4px 0; border-bottom: 2px solid transparent; }
+  nav a.on, nav a:hover { color: var(--text); border-bottom-color: var(--accent); }
+  .search { margin-left: auto; flex: 1 1 220px; max-width: 360px; }
+  .search input {
+    width: 100%; padding: 8px 12px; border-radius: 999px;
+    background: var(--bg); border: 1px solid var(--line); outline: none;
+  }
+  .search input:focus { border-color: var(--accent); }
+
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 26px; margin: 0 0 4px; line-height: 1.2; }
+  h2 { font-size: 16px; margin: 0; }
+  .muted { color: var(--muted); }
+  .error { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+           padding: 16px; }
+  .error code { color: var(--text-2); }
+
+  /* filters */
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 14px; }
+  .filters label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  .filters select, .filters input {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; min-width: 120px; color: var(--text);
+  }
+  .filters input[type=number] { min-width: 0; width: 84px; }
+  .filters button {
+    background: none; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer;
+    color: var(--text-2);
+  }
+  .filters button:hover { border-color: var(--accent); color: var(--text); }
+  .count { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+
+  /* cover grid */
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); transition: opacity .15s; }
+  .grid.loading { opacity: .45; }
+  .card { position: relative; display: block; border-radius: var(--radius); overflow: hidden;
+          background: var(--surface); aspect-ratio: 3 / 4; outline: none; }
+  .card:hover, .card:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+  .cover { position: absolute; inset: 0; background: var(--surface-2); }
+  .cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .ph {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+    padding: 12px; font-weight: 600; font-size: 14px; color: var(--text-2);
+    background: linear-gradient(160deg, hsl(var(--h) 25% 24%), hsl(var(--h) 30% 14%));
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) .ph { background: linear-gradient(160deg, hsl(var(--h) 35% 82%), hsl(var(--h) 30% 70%)); color: #20262d; }
+  }
+  .overlay {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 10px 8px;
+    background: linear-gradient(transparent, rgba(0,0,0,.85)); color: #fff;
+    opacity: 0; transition: opacity .12s;
+  }
+  .card:hover .overlay, .card:focus-visible .overlay { opacity: 1; }
+  .overlay b { display: block; font-size: 13px; line-height: 1.25; }
+  .overlay small { opacity: .8; }
+  .badge {
+    position: absolute; top: 6px; right: 6px; padding: 1px 7px; border-radius: 999px; font-size: 12px;
+    background: rgba(0,0,0,.72); color: #fff; font-variant-numeric: tabular-nums;
+  }
+  .badge::before { content: "★ "; color: var(--star); }
+
+  .pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 22px; }
+  .pager button {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 14px; cursor: pointer;
+  }
+  .pager button:disabled { opacity: .4; cursor: default; }
+
+  /* game page */
+  .game { display: grid; gap: 28px; grid-template-columns: 264px 1fr; align-items: start; }
+  .game .cover-lg { position: relative; aspect-ratio: 264 / 374; border-radius: var(--radius); overflow: hidden; }
+  .byline { color: var(--text-2); margin: 2px 0 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .chip {
+    padding: 2px 10px; border-radius: 999px; font-size: 13px; background: var(--surface);
+    border: 1px solid var(--line); color: var(--text-2);
+  }
+  a.chip:hover { border-color: var(--accent); color: var(--text); }
+  .rating { display: flex; align-items: baseline; gap: 12px; margin: 14px 0; }
+  .rating .num { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stars {
+    font-size: 24px; letter-spacing: 2px; line-height: 1;
+    background: linear-gradient(90deg, var(--star) var(--p), var(--surface-2) var(--p));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .summary { max-width: 70ch; color: var(--text-2); white-space: pre-line; }
+  dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 16px 0; font-size: 14px; }
+  dl.facts dt { color: var(--muted); }
+  dl.facts dd { margin: 0; }
+  .shots { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 8px; }
+  .shots img { height: 150px; border-radius: 6px; flex: none; background: var(--surface); }
+  section.block { margin-top: 30px; }
+  section.block > h2 { margin-bottom: 10px; }
+
+  /* stats */
+  .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin: 12px 0 22px; }
+  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .tile .v { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .k { color: var(--muted); font-size: 13px; }
+  .charts { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  .chart-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px 10px; min-width: 0; }
+  .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .chart-head button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; text-decoration: underline; }
+  .chart-sub { color: var(--muted); font-size: 12px; margin: 2px 0 6px; }
+  .chart svg { display: block; width: 100%; overflow: visible; }
+  .chart .grid-line { stroke: var(--line); stroke-width: 1; }
+  .chart text { fill: var(--muted); font-size: 11px; }
+  .chart text.strong { fill: var(--text); }
+  .chart .mark { fill: var(--accent); transition: opacity .1s; }
+  .chart .band:hover .mark, .chart .band:focus .mark { opacity: .72; }
+  .chart .band { outline: none; }
+  .chart .band:focus-visible .hit { stroke: var(--accent); stroke-width: 1; fill: none; }
+  .chart .hit { fill: transparent; }
+  table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.data td, table.data th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  table.data td:last-child, table.data th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .table-wrap { max-height: 280px; overflow: auto; }
+  .tip {
+    position: fixed; z-index: 50; pointer-events: none; background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.3); display: none;
+  }
+  .tip b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .tip span { color: var(--text-2); }
+
+  @media (max-width: 720px) {
+    .game { grid-template-columns: 1fr; }
+    .game .cover-lg { max-width: 220px; }
+    .charts { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="#/">VideoGame<span>Data</span></a>
+    <nav>
+      <a href="#/" id="nav-browse">Browse</a>
+      <a href="#/stats" id="nav-stats">Stats</a>
+    </nav>
+    <form class="search" id="search" role="search">
+      <input id="q" type="search" placeholder="Search games…" aria-label="Search games" autocomplete="off">
+    </form>
+  </div>
+</header>
+<main id="app"></main>
+<div class="tip" id="tip" role="status"></div>
+
+<script>
+"use strict";
+
+/* ---------- tiny DOM helpers (all data goes in via textContent) ---------- */
+const NS = "http://www.w3.org/2000/svg";
+function h(tag, props, ...kids) { return build(document.createElement(tag), props, kids); }
+function s(tag, props, ...kids) { return build(document.createElementNS(NS, tag), props, kids); }
+function build(el, props, kids) {
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.setAttribute("class", v);
+    else if (k === "text") el.textContent = v;
+    else if (k === "style") el.style.cssText = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+const app = document.getElementById("app");
+const fmt = n => (n == null ? "–" : Number(n).toLocaleString());
+
+async function api(path, params) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params || {})) if (v !== "" && v != null) qs.set(k, v);
+  const res = await fetch(path + (qs.size ? "?" + qs : ""));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+const IMG = "https://images.igdb.com/igdb/image/upload/";
+function hue(str) { let x = 0; for (const c of str || "") x = (x * 31 + c.charCodeAt(0)) % 360; return x; }
+
+/* Cover art with a coloured title placeholder underneath (shows if the image is missing/offline). */
+function cover(imageId, name, size) {
+  const box = h("div", { class: "cover" }, h("div", { class: "ph", style: `--h:${hue(name)}` }, name || "Unknown"));
+  if (imageId) {
+    const img = h("img", { src: `${IMG}${size}/${imageId}.jpg`, alt: "", loading: "lazy" });
+    img.addEventListener("error", () => img.remove());
+    box.append(img);
+  }
+  return box;
+}
+
+function card(g) {
+  return h("a", { class: "card", href: `#/game/${g.id}`, "aria-label": g.name },
+    cover(g.cover, g.name, "t_cover_big"),
+    g.rating != null && h("span", { class: "badge", text: (g.rating / 20).toFixed(1) }),
+    h("div", { class: "overlay" }, h("b", { text: g.name }), h("small", { text: g.year ?? "" })));
+}
+
+/* ---------- state / routing ---------- */
+let facets = { genres: [], platforms: [] };
+const SORTS = [["popular", "Most rated"], ["rating", "Highest rated"], ["newest", "Newest"], ["oldest", "Oldest"], ["name", "A–Z"]];
+
+function parseHash() {
+  const raw = location.hash.slice(1) || "/";
+  const i = raw.indexOf("?");
+  return { path: i < 0 ? raw : raw.slice(0, i), params: new URLSearchParams(i < 0 ? "" : raw.slice(i + 1)) };
+}
+function go(path, params) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params || {})) if (v !== "" && v != null) qs.set(k, v);
+  location.hash = path + (qs.size ? "?" + qs : "");
+}
+
+async function route() {
+  const { path, params } = parseHash();
+  document.getElementById("nav-browse").classList.toggle("on", !path.startsWith("/stats"));
+  document.getElementById("nav-stats").classList.toggle("on", path.startsWith("/stats"));
+  document.getElementById("q").value = path === "/" ? (params.get("q") || "") : "";
+  window.scrollTo(0, 0);
+  try {
+    if (path === "/stats") await statsPage();
+    else if (path.startsWith("/game/")) await gamePage(path.split("/")[2]);
+    else await browsePage(params);
+  } catch (e) {
+    app.replaceChildren(h("div", { class: "error" },
+      h("b", { text: "Something went wrong. " }), h("code", { text: e.message }),
+      h("p", { class: "muted", text: "Is the server still running, and did load_duckdb.py finish?" })));
+  }
+}
+window.addEventListener("hashchange", route);
+document.getElementById("search").addEventListener("submit", e => {
+  e.preventDefault();
+  go("/", { q: document.getElementById("q").value.trim() });
+});
+
+/* ---------- browse ---------- */
+async function browsePage(params) {
+  const cur = Object.fromEntries(params);
+  const merge = patch => go("/", { ...cur, page: "", ...patch });
+
+  const select = (label, key, options) => h("label", { text: label },
+    h("select", { onchange: e => merge({ [key]: e.target.value }) },
+      options.map(([v, t]) => h("option", { value: v, text: t, selected: String(cur[key] || "") === String(v) }))));
+  const year = (label, key) => h("label", { text: label },
+    h("input", { type: "number", min: 1950, max: 2100, value: cur[key] || "", placeholder: "any",
+                 onchange: e => merge({ [key]: e.target.value }) }));
+
+  const filters = h("div", { class: "filters" },
+    select("Genre", "genre", [["", "All genres"], ...facets.genres.map(g => [g.id, g.name])]),
+    select("Platform", "platform", [["", "All platforms"], ...facets.platforms.map(p => [p.id, `${p.name} (${fmt(p.n)})`])]),
+    year("From year", "from"), year("To year", "to"),
+    select("Sort", "sort", SORTS),
+    h("button", { type: "button", text: "Reset", onclick: () => go("/", {}) }));
+
+  const countEl = h("p", { class: "count", text: "Loading…" });
+  const grid = h("div", { class: "grid loading" });
+  const pager = h("div", { class: "pager" });
+  app.replaceChildren(filters, countEl, grid, pager);
+
+  const data = await api("/api/games", cur);
+  const pages = Math.max(1, Math.ceil(data.total / data.page_size));
+  countEl.textContent = `${fmt(data.total)} games` + (cur.q ? ` matching “${cur.q}”` : "");
+  grid.classList.remove("loading");
+  grid.replaceChildren(...data.games.map(card));
+  if (!data.games.length) grid.replaceChildren(h("p", { class: "muted", text: "No games match these filters." }));
+  const goPage = p => go("/", { ...cur, page: p > 1 ? p : "" });
+  pager.replaceChildren(
+    h("button", { text: "← Prev", disabled: data.page <= 1, onclick: () => goPage(data.page - 1) }),
+    h("span", { class: "muted", text: `Page ${data.page} of ${fmt(pages)}` }),
+    h("button", { text: "Next →", disabled: data.page >= pages, onclick: () => goPage(data.page + 1) }));
+}
+
+/* ---------- game page ---------- */
+async function gamePage(id) {
+  const g = await api(`/api/game/${encodeURIComponent(id)}`);
+  document.title = `${g.name} · VideoGameData Explorer`;
+  const date = g.release != null ? new Date(g.release * 1000) : null;
+  const year = date ? date.getUTCFullYear() : null;
+  const pct = g.rating != null ? Math.max(0, Math.min(100, g.rating)) : null;
+
+  const chips = (items, makeLink) => items.length
+    ? h("div", { class: "chips" }, items.map(makeLink)) : null;
+  const plain = t => h("span", { class: "chip", text: t });
+  const fact = (k, v) => v && v.length ? [h("dt", { text: k }), h("dd", { text: Array.isArray(v) ? v.join(", ") : v })] : [];
+
+  app.replaceChildren(
+    h("div", { class: "game" },
+      h("div", { class: "cover-lg" }, cover(g.cover, g.name, "t_cover_big_2x")),
+      h("div", {},
+        h("h1", { text: g.name }),
+        h("div", { class: "byline", text: [year, g.developers.slice(0, 3).join(", ")].filter(Boolean).join(" · ") }),
+        pct != null
+          ? h("div", { class: "rating" },
+              h("span", { class: "num", text: (pct / 20).toFixed(1) }),
+              h("span", { class: "stars", style: `--p:${pct}%`, "aria-label": `${(pct / 20).toFixed(1)} out of 5`, text: "★★★★★" }),
+              h("span", { class: "muted", text: `${fmt(g.votes)} ratings` }))
+          : h("p", { class: "muted", text: "No rating yet." }),
+        chips(g.genres.map((n, i) => [n, g.genre_ids[i]]), ([n, gid]) => h("a", { class: "chip", href: `#/?genre=${gid}`, text: n })),
+        chips(g.platforms.map((n, i) => [n, g.platform_ids[i]]), ([n, pid]) => h("a", { class: "chip", href: `#/?platform=${pid}`, text: n })),
+        g.summary && h("p", { class: "summary", text: g.summary }),
+        h("dl", { class: "facts" },
+          fact("Released", date && date.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })),
+          fact("Developers", g.developers), fact("Publishers", g.publishers),
+          fact("Themes", g.themes), fact("Modes", g.modes), fact("Perspectives", g.perspectives),
+          g.critic_rating != null ? fact("Critic score", Math.round(g.critic_rating) + " / 100") : [],
+          g.user_rating != null ? fact("User score", Math.round(g.user_rating) + " / 100") : []),
+        g.url && h("a", { class: "chip", href: g.url, target: "_blank", rel: "noopener noreferrer", text: "View on IGDB ↗" }))),
+    g.storyline && h("section", { class: "block" }, h("h2", { text: "Storyline" }), h("p", { class: "summary", text: g.storyline })),
+    g.screenshots.length ? h("section", { class: "block" }, h("h2", { text: "Screenshots" }),
+      h("div", { class: "shots" }, g.screenshots.map(i => h("img", { src: `${IMG}t_screenshot_med/${i}.jpg`, alt: "", loading: "lazy",
+        onerror: e => e.target.remove() })))) : null,
+    g.similar.length ? h("section", { class: "block" }, h("h2", { text: "Similar games" }),
+      h("div", { class: "grid" }, g.similar.map(card))) : null);
+}
+
+/* ---------- stats + charts ---------- */
+const tip = document.getElementById("tip");
+function showTip(e, value, label) {
+  tip.replaceChildren(h("b", { text: value }), h("span", { text: label }));
+  tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  const x = Math.min(e.clientX + 14, innerWidth - r.width - 8);
+  tip.style.left = Math.max(8, x) + "px";
+  tip.style.top = Math.max(8, e.clientY - r.height - 12) + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+function tipAtElement(el, value, label) {
+  const r = el.getBoundingClientRect();
+  showTip({ clientX: r.left + r.width / 2, clientY: r.top }, value, label);
+}
+
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+}
+const axisFmt = n => n >= 10000 ? (n / 1000) + "K" : n.toLocaleString();
+const roundTop = (x, y, w, hgt, r) => {          // 4px rounded data end (top), square baseline
+  r = Math.min(r, w / 2, hgt);
+  return `M${x},${y + hgt}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + hgt}Z`;
+};
+const roundRight = (x, y, w, hgt, r) => {        // 4px rounded data end (right), square baseline
+  r = Math.min(r, hgt / 2, w);
+  return `M${x},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + hgt - r}Q${x + w},${y + hgt} ${x + w - r},${y + hgt}H${x}Z`;
+};
+
+/* Columns (vertical) or bars (horizontal), one series, drawn at the container's real width. */
+function drawChart(host, rows, opts) {
+  const { horizontal = false, unit = "games", labelOf = r => String(r.label) } = opts;
+  const W = Math.max(280, host.clientWidth), ink = "var(--muted)";
+  const max = Math.max(1, ...rows.map(r => r.value));
+  const step = niceStep(max / 4), top = Math.ceil(max / step) * step;
+  let svg;
+
+  if (!horizontal) {
+    const m = { l: 44, r: 8, t: 14, b: 24 }, H = 230;
+    const iw = W - m.l - m.r, ih = H - m.t - m.b, band = iw / rows.length, bw = Math.max(2, Math.min(24, band - 2));
+    const y = v => m.t + ih - (v / top) * ih;
+    svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img" });
+    for (let v = 0; v <= top; v += step) {
+      svg.append(s("line", { class: "grid-line", x1: m.l, x2: W - m.r, y1: y(v), y2: y(v) }));
+      svg.append(s("text", { x: m.l - 6, y: y(v) + 4, "text-anchor": "end", text: axisFmt(v) }));
+    }
+    const every = Math.ceil((opts.labelGap || 46) / band);
+    let maxIdx = 0; rows.forEach((r, i) => { if (r.value > rows[maxIdx].value) maxIdx = i; });
+    rows.forEach((r, i) => {
+      const cx = m.l + band * i + band / 2, bh = (r.value / top) * ih;
+      const g = s("g", { class: "band", tabindex: 0, "aria-label": `${labelOf(r)}: ${fmt(r.value)} ${unit}` });
+      g.append(s("path", { class: "mark", d: roundTop(cx - bw / 2, y(r.value), bw, bh, 4) }));
+      g.append(s("rect", { class: "hit", x: cx - band / 2, y: m.t, width: band, height: ih }));
+      g.addEventListener("pointermove", e => showTip(e, fmt(r.value), `${labelOf(r)} · ${unit}`));
+      g.addEventListener("pointerleave", hideTip);
+      g.addEventListener("focus", () => tipAtElement(g, fmt(r.value), `${labelOf(r)} · ${unit}`));
+      g.addEventListener("blur", hideTip);
+      svg.append(g);
+      if (i % every === 0 || i === rows.length - 1 && every === 1)
+        svg.append(s("text", { x: cx, y: H - 6, "text-anchor": "middle", text: labelOf(r) }));
+      if (i === maxIdx)   // one direct label: the peak
+        svg.append(s("text", { class: "strong", x: Math.min(Math.max(cx, m.l + 14), W - m.r - 14), y: y(r.value) - 5, "text-anchor": "middle", text: fmt(r.value) }));
+    });
+  } else {
+    const lw = Math.min(170, W * 0.38), rowH = 28, m = { t: 4, r: 56 }, H = rows.length * rowH + m.t, bh = 14;
+    const iw = W - lw - m.r;
+    svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img" });
+    rows.forEach((r, i) => {
+      const yy = m.t + i * rowH, w = Math.max(2, (r.value / max) * iw);
+      const g = s("g", { class: "band", tabindex: 0, "aria-label": `${r.label}: ${fmt(r.value)} ${unit}` });
+      const name = r.label.length > 26 ? r.label.slice(0, 25) + "…" : r.label;
+      g.append(s("text", { x: lw - 8, y: yy + rowH / 2 + 4, "text-anchor": "end", text: name }));
+      g.append(s("path", { class: "mark", d: roundRight(lw, yy + (rowH - bh) / 2, w, bh, 4) }));
+      g.append(s("text", { class: "strong", x: lw + w + 6, y: yy + rowH / 2 + 4, text: fmt(r.value) }));
+      g.append(s("rect", { class: "hit", x: 0, y: yy, width: W, height: rowH }));
+      g.addEventListener("pointermove", e => showTip(e, fmt(r.value), `${r.label} · ${unit}`));
+      g.addEventListener("pointerleave", hideTip);
+      g.addEventListener("focus", () => tipAtElement(g, fmt(r.value), `${r.label} · ${unit}`));
+      g.addEventListener("blur", hideTip);
+      svg.append(g);
+    });
+  }
+  host.replaceChildren(svg);
+}
+
+function chartCard(title, sub, rows, opts) {
+  const host = h("div", { class: "chart" });
+  const table = h("div", { class: "table-wrap", hidden: true },
+    h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: opts.axis || "Item" }), h("th", { text: opts.unit || "games" }))),
+      h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: (opts.labelOf || (x => x.label))(r) }), h("td", { text: fmt(r.value) }))))));
+  const toggle = h("button", { type: "button", text: "View as table", onclick: () => {
+    const showTable = table.hidden;
+    table.hidden = !showTable; host.hidden = showTable;
+    toggle.textContent = showTable ? "View as chart" : "View as table";
+    if (!showTable) redraw();
+  } });
+  const redraw = () => { if (rows.length && host.clientWidth) drawChart(host, rows, opts); };
+  const el = h("div", { class: "chart-card" },
+    h("div", { class: "chart-head" }, h("h2", { text: title }), toggle),
+    h("div", { class: "chart-sub", text: sub }), host, table);
+  if (!rows.length) host.replaceChildren(h("p", { class: "muted", text: "No data in this dump yet." }));
+  el.redraw = redraw;
+  return el;
+}
+
+async function statsPage() {
+  document.title = "Stats · VideoGameData Explorer";
+  const st = await api("/api/stats");
+  const t = st.totals;
+  const pctOf = (a, b) => b ? ` (${Math.round(100 * a / b)}%)` : "";
+  const tile = (v, k) => h("div", { class: "tile" }, h("div", { class: "v", text: v }), h("div", { class: "k", text: k }));
+  const cards = [
+    chartCard("Games released per year", "Release year of every game with a date, 1970 onward", st.per_year, { axis: "Year", unit: "games" }),
+    chartCard("Rating distribution", "Average user + critic score, games with at least 5 ratings", st.ratings.map(r => ({ ...r, label: r.label })),
+      { axis: "Score range", unit: "games", labelGap: 34, labelOf: r => `${r.label}–${r.label + 9}` }),
+    chartCard("Top genres", "Games per genre (a game can have several)", st.top_genres, { horizontal: true, axis: "Genre", unit: "games" }),
+    chartCard("Top platforms", "Games per platform (a game can be on several)", st.top_platforms, { horizontal: true, axis: "Platform", unit: "games" }),
+  ];
+  app.replaceChildren(
+    h("h1", { text: "Stats" }),
+    h("div", { class: "tiles" },
+      tile(fmt(t.games), "games in the dump"),
+      tile(fmt(t.rated), "with a rating" + pctOf(t.rated, t.games)),
+      tile(fmt(t.covered), "with cover art" + pctOf(t.covered, t.games)),
+      tile(t.first_year != null ? `${t.first_year}–${t.last_year}` : "–", "release years covered")),
+    h("div", { class: "charts" }, cards));
+  cards.forEach(c => c.redraw());
+}
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => document.querySelectorAll(".chart-card").forEach(c => c.redraw && c.redraw()), 120);
+});
+
+/* ---------- start ---------- */
+(async () => {
+  try { facets = await api("/api/facets"); } catch (e) { /* the page itself will show the error */ }
+  route();
+})();
+</script>
+</body>
+</html>
