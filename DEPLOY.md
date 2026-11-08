@@ -1,6 +1,11 @@
-# Putting the explorer on your website (brutalc.com/games)
+# Putting the explorer on your website (games.brutalc.com)
 
-This guide assumes shared hosting with cPanel. **Read "Will your host cope?" first**: the
+This guide assumes shared hosting with cPanel and a **subdomain** (`games.brutalc.com`), linked
+from your main site. A subdomain is separate from your main site's `.htaccess`, so it can't
+interfere with WordPress or other tools. (The explorer can also run under a path such as
+`/games`; see the note at the end of Plan A.)
+
+**Read "Will your host cope?" first**: the
 explorer itself is light, but the daily refresh is not, and that is where shared hosting
 often fails.
 
@@ -35,11 +40,15 @@ cd ~
 git clone https://github.com/michael-ebmeier/VideoGameData igdb-explorer
 ```
 
-### 2. Create the Python app
-cPanel → **Setup Python App** → **Create Application**:
+### 2. Create the subdomain and the Python app
+First create the subdomain: cPanel → **Domains** → **Create A New Domain** → `games.brutalc.com`.
+Leave its document root as the default empty folder; the app does not live there.
+
+Then, in **Setup Python App** (on some Bluehost accounts: **Application Manager**) → **Create
+Application**:
 - **Python version:** 3.11 or 3.12
 - **Application root:** `igdb-explorer`
-- **Application URL:** `brutalc.com/games`
+- **Domain / Application URL:** `games.brutalc.com`, with no path after it
 - **Application startup file:** `passenger_wsgi.py`
 - **Application Entry point:** `application`
 
@@ -66,7 +75,8 @@ cd ~/igdb-explorer
 DUCKDB_MEMORY_LIMIT=1GB DUCKDB_THREADS=1 python load_duckdb.py
 ```
 Then restart the app: the **Restart** button in Setup Python App, or `touch tmp/restart.txt`
-in the app folder. Visit <https://brutalc.com/games>. (No `state.json` yet? That's fine: the
+in the app folder. Visit <https://games.brutalc.com>. A new subdomain's HTTPS certificate
+(AutoSSL) can take a few minutes to appear. (No `state.json` yet? That's fine: the
 first update copes and creates it.)
 
 ### 5. Schedule the daily refresh
@@ -87,7 +97,7 @@ Next morning:
 ```bash
 tail -20 ~/igdb-explorer/data/update.log
 ```
-You want `done in …s` at the end. Also try a search at brutalc.com/games for something added
+You want `done in …s` at the end. Also try a search at games.brutalc.com for something added
 recently.
 
 ### Updating the code later
@@ -96,10 +106,15 @@ cd ~/igdb-explorer && git pull
 touch tmp/restart.txt
 ```
 
+**Running under a path instead** (`brutalc.com/games`): the app supports it. Enter the path as
+the application's base URL when creating it. The catch is that the host adds rules to the main
+site's `.htaccess`, the same file WordPress uses, so there is a small chance of a conflict. A
+subdomain avoids that, which is why this guide uses one.
+
 ## Plan B (recommended if Plan A struggles): a small VPS
 A $5/month Linux VPS runs this comfortably. Same steps, but run the app with
-`gunicorn passenger_wsgi:application` behind nginx, and point a **subdomain**
-(`games.brutalc.com`) at it, linked from your site. To keep the `/games` path, put your domain
+`gunicorn passenger_wsgi:application` behind nginx, and point `games.brutalc.com` at it
+(a DNS record to the VPS's address). To keep a `/games` path instead, put your domain
 on Cloudflare and route `brutalc.com/games*` to the VPS with a Worker. Ask me and I'll write
 the exact config.
 

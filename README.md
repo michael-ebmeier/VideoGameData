@@ -92,7 +92,7 @@ Stop the server with Ctrl+C. Rebuild the database (`load_duckdb.py`) only while 
 
 ## Putting it on a website
 
-`DEPLOY.md` walks through hosting the explorer at a path like `yoursite.com/games` on cPanel
+`DEPLOY.md` walks through hosting the explorer on a subdomain like `games.yoursite.com` (or a path) on cPanel
 shared hosting, with a daily cron job that refreshes every endpoint. It also covers a VPS and
 "build elsewhere, upload the database" alternatives.
 
