@@ -1,21 +1,23 @@
 <?php
 /*
- * Share page for one game, e.g. https://games.example.com/game/178026  (the .htaccess maps that to
+ * The page for one game, e.g. https://games.example.com/game/178026  (the .htaccess maps that to
  * share.php?id=178026).
  *
- * The explorer itself lives at /#/game/178026, but everything after the # stays in the browser, so chat
- * apps like Discord (which fetch the link and read its "Open Graph" tags) never see which game it is.
- * This page returns the tags for that game, then sends people on to the real page.
+ * It returns the whole app (index.html) with the preview tags for that game swapped in, so the same address
+ * works for people (the app opens on that game) and for chat apps like Discord, which fetch the link, don't
+ * run JavaScript, and read the "Open Graph" tags to draw a preview card.
  *
  * It only reads the game's small detail file (data/<version>/d/<n>.dat) that the build already writes.
- * build_static.py can also pre-build the same page as plain HTML for the most popular games
- * (--share-pages), which the .htaccess prefers when it exists; keep the two in step (the build's
- * share_page() mirrors describe() and render() below, and the tests compare them).
+ * build_static.py can also pre-build the same tags as tiny HTML pages for hosts without PHP (--no-php,
+ * --share-pages); keep the two in step (the build's share_tags() mirrors describe() and tags() below, and
+ * the tests compare them).
  */
 declare(strict_types=1);
 
 const SHARD = 500;                                  // games per detail file (build_static.py SHARD)
 const IGDB_IMAGES = 'https://images.igdb.com/igdb/image/upload/';
+const TAGS_BEGIN = '<!--SHARE_TAGS-->';
+const TAGS_END = '<!--/SHARE_TAGS-->';
 
 function h(string $s): string {
     return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -101,20 +103,20 @@ function describe(array $g, int $id): array {
         $description = 'A game in the VideoGameData database.';
     }
 
-    // a landscape screenshot makes a big preview; failing that the (portrait) cover makes a small one
+    // the cover makes a small preview card; a game with no cover falls back to its first (landscape) screenshot
     $image = null;
     $safe = fn($v) => is_string($v) && preg_match('/^[A-Za-z0-9_-]+$/', $v) === 1;
-    if (!empty($g['screenshots']) && $safe($g['screenshots'][0])) {
-        $image = [IGDB_IMAGES . 't_screenshot_huge/' . $g['screenshots'][0] . '.jpg', 1280, 720, 'summary_large_image'];
-    } elseif ($safe($g['cover'] ?? null)) {
+    if ($safe($g['cover'] ?? null)) {
         $image = [IGDB_IMAGES . 't_cover_big_2x/' . $g['cover'] . '.jpg', 528, 748, 'summary'];
+    } elseif (!empty($g['screenshots']) && $safe($g['screenshots'][0])) {
+        $image = [IGDB_IMAGES . 't_screenshot_huge/' . $g['screenshots'][0] . '.jpg', 1280, 720, 'summary_large_image'];
     }
     return [$title, $description, $image];
 }
 
-function render(string $title, string $description, ?array $image, string $redirect): string {
-    $out  = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n";
-    $out .= '<title>' . h($title) . " · VideoGameData</title>\n";
+/* The tags that go in the page's <head>, one per line. */
+function tags(string $title, string $description, ?array $image): string {
+    $out  = '<title>' . h($title) . " · VideoGameData</title>\n";
     $out .= '<meta name="description" content="' . h($description) . "\">\n";
     $out .= "<meta property=\"og:site_name\" content=\"VideoGameData\">\n<meta property=\"og:type\" content=\"website\">\n";
     $out .= '<meta property="og:title" content="' . h($title) . "\">\n";
@@ -124,12 +126,22 @@ function render(string $title, string $description, ?array $image, string $redir
         $out .= '<meta property="og:image:width" content="' . $image[1] . "\">\n";
         $out .= '<meta property="og:image:height" content="' . $image[2] . "\">\n";
     }
-    $out .= '<meta name="twitter:card" content="' . ($image ? $image[3] : 'summary') . "\">\n";
-    $out .= "<meta name=\"theme-color\" content=\"#3987e5\">\n";
-    $out .= '<meta http-equiv="refresh" content="0; url=' . h($redirect) . "\">\n";
-    $out .= '<script>location.replace(' . json_encode($redirect, JSON_UNESCAPED_SLASHES) . ");</script>\n</head>\n";
-    $out .= '<body><p><a href="' . h($redirect) . '">' . h($title) . "</a> on VideoGameData</p></body>\n</html>\n";
+    $out .= '<meta name="twitter:card" content="' . ($image ? $image[3] : 'summary') . '">';
     return $out;
+}
+
+/* The app page with its preview tags replaced, or null if index.html isn't there / has no tag block. */
+function app_page(string $tags): ?string {
+    $index = @file_get_contents(__DIR__ . '/index.html');
+    if ($index === false) {
+        return null;
+    }
+    $begin = strpos($index, TAGS_BEGIN);
+    $end = strpos($index, TAGS_END);
+    if ($begin === false || $end === false || $end < $begin) {
+        return null;
+    }
+    return substr($index, 0, $begin + strlen(TAGS_BEGIN)) . "\n" . $tags . "\n" . substr($index, $end);
 }
 
 /* ---- request ---- */
@@ -138,12 +150,22 @@ $base = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '
 $game = $id > 0 ? load_entry($id) : null;
 
 header('Content-Type: text/html; charset=utf-8');
+header('Cache-Control: no-cache');                  // index.html changes with every deploy
 if ($game === null) {
-    http_response_code(404);
-    header('Cache-Control: no-cache');
-    echo render('Game not found', 'This game is not in the VideoGameData database.', null, $base . '/');
+    http_response_code(404);                        // the app still opens and says the game wasn't found
+    $page = app_page(tags('Game not found', 'This game is not in the VideoGameData database.', null));
+    echo $page ?? '<!doctype html><meta charset="utf-8"><p>Game not found. <a href="' . h($base . '/') . '">VideoGameData</a></p>';
     exit;
 }
-header('Cache-Control: public, max-age=3600');
 [$title, $description, $image] = describe($game, $id);
-echo render($title, $description, $image, $base . '/#/game/' . $id);
+$tags = tags($title, $description, $image);
+$page = app_page($tags);
+if ($page === null) {                               // no index.html to wrap: a tiny page that sends people to the app
+    $to = $base . '/#/game/' . $id;
+    echo "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n" . $tags . "\n"
+       . '<meta http-equiv="refresh" content="0; url=' . h($to) . "\">\n"
+       . '<script>location.replace(' . json_encode($to, JSON_UNESCAPED_SLASHES) . ");</script>\n</head>\n"
+       . '<body><p><a href="' . h($to) . '">' . h($title) . "</a> on VideoGameData</p></body>\n</html>\n";
+    exit;
+}
+echo $page;

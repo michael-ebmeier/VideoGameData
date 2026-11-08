@@ -6,6 +6,7 @@
 <!--ANALYSIS_JS-->
 <!--STATIC_API-->
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!--SHARE_TAGS-->
 <title>VideoGameData Explorer</title>
 <meta name="description" content="Search and explore the IGDB video game database: ratings, genres, platforms, time to beat, and how they relate.">
 <meta property="og:site_name" content="VideoGameData">
@@ -13,6 +14,7 @@
 <meta property="og:title" content="VideoGameData Explorer">
 <meta property="og:description" content="Search and explore the IGDB video game database: ratings, genres, platforms, time to beat, and how they relate.">
 <meta name="twitter:card" content="summary">
+<!--/SHARE_TAGS-->
 <meta name="theme-color" content="#3987e5">
 <meta name="share-mode" content="__SHARE_MODE__">
 <style>
@@ -256,10 +258,10 @@
 <body>
 <header class="top">
   <div class="top-inner">
-    <a class="brand" href="#/">VideoGame<span>Data</span></a>
+    <a class="brand" href="./">VideoGame<span>Data</span></a>
     <nav>
-      <a href="#/" id="nav-browse">Browse</a>
-      <a href="#/stats" id="nav-stats">Stats</a>
+      <a href="./" id="nav-browse">Browse</a>
+      <a href="stats" id="nav-stats">Stats</a>
     </nav>
     <form class="search" id="search" role="search">
       <input id="q" type="search" placeholder="Search games…" aria-label="Search games" autocomplete="off">
@@ -380,7 +382,7 @@ function hoursText(h) {
 }
 
 function card(g) {
-  return h("a", { class: "card", href: `#/game/${g.id}`, "aria-label": g.name },
+  return h("a", { class: "card", href: appUrl(`/game/${g.id}`), "aria-label": g.name },
     cover(g.cover, g.name, "t_cover_big"),
     g.rating != null && h("span", { class: "badge", text: (g.rating / 20).toFixed(1) }),
     h("div", { class: "overlay" }, h("b", { text: g.name }), h("small", { text: [g.year, g.ttb != null && hoursText(g.ttb)].filter(x => x != null && x !== false && x !== "").join(" · ") })));
@@ -392,19 +394,35 @@ const SORTS = [["popular", "Most rated"], ["rating", "Highest rated"], ["newest"
 const LENGTH_SORTS = [["shortest", "Shortest to beat"], ["longest", "Longest to beat"]];
 const LENGTHS = [["", "Any length"], ["0-5", "Under 5 h"], ["5-10", "5–10 h"], ["10-20", "10–20 h"], ["20-40", "20–40 h"], ["40-", "40 h or more"]];
 
-function parseHash() {
-  const raw = location.hash.slice(1) || "/";
-  const i = raw.indexOf("?");
-  return { path: i < 0 ? raw : raw.slice(0, i), params: new URLSearchParams(i < 0 ? "" : raw.slice(i + 1)) };
-}
-function go(path, params) {
+/* Real URLs: /, /stats, /game/123 (plus ?filters). BASE_PATH is "/" at the site root, "/games/" when mounted. */
+const BASE_PATH = new URL(document.baseURI).pathname.replace(/\/?$/, "/");
+function appUrl(path, params) {
   const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(params || {})) if (v !== "" && v != null) qs.set(k, v);
-  location.hash = path + (qs.size ? "?" + qs : "");
+  const entries = params instanceof URLSearchParams ? [...params] : Object.entries(params || {});
+  for (const [k, v] of entries) if (v !== "" && v != null) qs.set(k, v);
+  return BASE_PATH.replace(/\/$/, "") + path + (qs.size ? "?" + qs : "");
+}
+/* the app path for a URL ("/", "/stats", "/game/7"), or null if it isn't one of ours */
+function appPathOf(u) {
+  let p = u.pathname;
+  if (p === BASE_PATH.replace(/\/$/, "")) p = BASE_PATH;
+  if (!p.startsWith(BASE_PATH)) return null;
+  p = ("/" + p.slice(BASE_PATH.length)).replace(/\/+$/, "") || "/";
+  return /^\/(stats|game\/\d+)?$/.test(p) ? p : null;
+}
+function parseLocation() { return { path: appPathOf(location) || "/", params: new URLSearchParams(location.search) }; }
+function navigate(url, replace) { history[replace ? "replaceState" : "pushState"](null, "", url); route(); }
+const go = (path, params) => navigate(appUrl(path, params));
+/* links made before this change look like /#/game/123: turn them into /game/123 once, without a reload */
+function adoptLegacyHash() {
+  if (!location.hash.startsWith("#/")) return false;
+  const [path, qs] = location.hash.slice(1).split("?");
+  history.replaceState(null, "", appUrl(path || "/", new URLSearchParams(qs || "")));
+  return true;
 }
 
 async function route() {
-  const { path, params } = parseHash();
+  const { path, params } = parseLocation();
   document.getElementById("nav-browse").classList.toggle("on", !path.startsWith("/stats"));
   document.getElementById("nav-stats").classList.toggle("on", path.startsWith("/stats"));
   document.getElementById("q").value = path === "/" ? (params.get("q") || "") : "";
@@ -421,7 +439,17 @@ async function route() {
         : "Is the server still running, and did load_duckdb.py finish?" })));
   }
 }
-window.addEventListener("hashchange", route);
+window.addEventListener("popstate", route);
+window.addEventListener("hashchange", () => { if (adoptLegacyHash()) route(); });
+/* internal links change the page without a reload (modified clicks and new tabs still behave normally) */
+document.addEventListener("click", e => {
+  const a = e.target.closest && e.target.closest("a[href]");
+  if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || a.target || a.hasAttribute("download")) return;
+  const u = new URL(a.href, location.href);
+  if (u.origin !== location.origin || appPathOf(u) === null) return;
+  e.preventDefault();
+  navigate(u.pathname + u.search);
+});
 document.getElementById("search").addEventListener("submit", e => {
   e.preventDefault();
   go("/", { q: document.getElementById("q").value.trim() });
@@ -466,8 +494,8 @@ async function browsePage(params) {
 }
 
 /* ---------- game page ---------- */
-/* The link to post in chat. Everything after # stays in the browser, so chat apps can't tell which game a
-   /#/game/123 link is; /game/123 is answered by share.php with that game's preview tags. */
+/* The link to post in chat. /game/123 is answered by share.php, which adds that game's preview tags
+   (title, rating, picture) for Discord and similar apps to read. */
 const shareMode = () => (document.querySelector('meta[name="share-mode"]') || {}).content;   // "php": any game can be shared
 function shareButton(id) {
   const url = new URL(`game/${id}`, document.baseURI).href;
@@ -512,8 +540,8 @@ async function gamePage(id) {
               h("span", { class: "muted", text: `${fmt(g.votes)} ratings` }))
           : h("p", { class: "muted", text: "No rating yet." }),
         g.time_to_beat && timeToBeat(g.time_to_beat),
-        chips(g.genres.map((n, i) => [n, g.genre_ids[i]]), ([n, gid]) => h("a", { class: "chip", href: `#/?genre=${gid}`, text: n })),
-        chips(g.platforms.map((n, i) => [n, g.platform_ids[i]]), ([n, pid]) => h("a", { class: "chip", href: `#/?platform=${pid}`, text: n })),
+        chips(g.genres.map((n, i) => [n, g.genre_ids[i]]), ([n, gid]) => h("a", { class: "chip", href: appUrl("/", { genre: gid }), text: n })),
+        chips(g.platforms.map((n, i) => [n, g.platform_ids[i]]), ([n, pid]) => h("a", { class: "chip", href: appUrl("/", { platform: pid }), text: n })),
         g.summary && h("p", { class: "summary", text: g.summary }),
         h("dl", { class: "facts" },
           fact("Released", date && date.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })),
@@ -849,7 +877,7 @@ function drawScatter(host, res, G) {
     showTip(e, G.name[near.i], `${AXIS_LABEL[res.xk]}: ${fmtVal(res.xk, xv)} · ${AXIS_LABEL[res.yk]}: ${fmtVal(res.yk, yv)}`);
   });
   hit.addEventListener("pointerleave", () => { hl.style.display = "none"; hideTip(); });
-  hit.addEventListener("click", e => { const p = nearest(e); if (p) location.hash = `#/game/${G.id[p.i]}`; });
+  hit.addEventListener("click", e => { const p = nearest(e); if (p) go(`/game/${G.id[p.i]}`); });
   svg.append(hit);
   host.replaceChildren(svg);
 }
@@ -991,7 +1019,7 @@ function relationshipsSection(params) {
       trimBox, " Trim extremes ", h("span", { class: "muted", text: "(ignore the lowest and highest 1% of time to beat and number of ratings)" })),
     slot);
   const keep = () => { const q = new URLSearchParams({ x: state.x, y: state.y }); if (state.agg) q.set("agg", state.agg); if (state.show === "pct") q.set("show", "pct"); if (state.view) q.set("view", state.view); if (!state.trim) q.set("trim", "0"); if (state.method === "pearson") q.set("m", "pearson");
-    history.replaceState(null, "", "#/stats?" + q); };
+    history.replaceState(null, "", appUrl("/stats", q)); };
   const load = async () => {
     try {
       const G = await getColumns();
@@ -1054,6 +1082,7 @@ window.addEventListener("resize", () => {
 (async () => {
   try { facets = await api("api/facets"); } catch (e) { /* the page itself will show the error */ }
   syncWildUi();
+  adoptLegacyHash();                  // an old /#/game/123 link becomes /game/123 before the first page is drawn
   route();
 })();
 </script>

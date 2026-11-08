@@ -491,7 +491,7 @@ class App:
         script = (environ.get("SCRIPT_NAME") or "").rstrip("/")
         q = parse_qs(environ.get("QUERY_STRING", ""))
         try:
-            if path in ("", "/", "/index.html"):
+            if path in ("", "/", "/index.html") or re.fullmatch(r"/(stats|game/\d+)/?", path):   # the app's own pages
                 if path == "" and script:      # /games  ->  /games/  (relative URLs need the slash)
                     return self.reply(start_response, 301, b"", "text/plain", [("Location", script + "/")])
                 html = (self.index.read_text(encoding="utf-8").replace("__BASE__", script + "/")

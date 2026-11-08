@@ -120,11 +120,11 @@ charts alike, the notes say exactly which range is shown and how many games were
 turning it off (or `trim=0` in the page address) shows everything. Rating and release year are not
 trimmed, because their ranges are bounded and trimming would drop real games.
 
-## Sharing links (Discord)
+## Links and sharing (Discord)
 
-The game pages have a **Copy share link** button. The link it copies (`/game/178026`, not `/#/game/178026`)
-shows a preview card when posted in Discord and similar apps: the game's title, rating, time to beat,
-genres, platforms, a short summary and a screenshot or cover. It is served by a small PHP script
+Every page has a real address: `/game/178026`, `/stats`, `/?genre=3` (no `#`), and old `/#/…` links still
+open correctly. Posting a game's link in Discord shows a preview card with the game's cover, title, rating,
+time to beat, genres, platforms and a short summary. It is served by a small PHP script
 (`explorer/static/share.php`, written into the site by `build_static.py`); see `DEPLOY.md`.
 
 ## Putting it on a website

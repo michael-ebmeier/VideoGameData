@@ -29,6 +29,7 @@ Options:
   --frontend-only   just refresh index.html, static-api.js and analysis.js (after a `git pull`), no data rebuild
   --src DIR         where the .jsonl files are (default data/igdb)
   --keep N          how many data versions to keep (default 2)
+  --base PATH       the URL path the site lives under (default /)
   --no-php          the host can't run PHP: leave out share.php and use only --share-pages N
   --share-pages N   also pre-build the Discord/link-preview page of the N most-rated games as plain
                     HTML (game-pages/). Only needed if share.php can't run on your host.
@@ -147,8 +148,8 @@ def _excerpt(s, mx=240):
     return cut.rstrip(" ,;:.-") + "…"
 
 
-def share_page(g, gid, redirect):
-    """The preview page for one game. Mirrors describe() and render() in explorer/static/share.php."""
+def share_tags(g, gid):
+    """The preview tags for one game, one per line. Mirrors describe() and tags() in explorer/static/share.php."""
     esc = lambda v: html.escape(v, quote=True).replace("&#x27;", "&#039;")     # PHP's ENT_QUOTES spelling
     name = g.get("name") or f"Game {gid}"
     title = name + (f" ({time.gmtime(g['release']).tm_year})" if g.get("release") is not None else "")
@@ -174,12 +175,11 @@ def share_page(g, gid, redirect):
         desc = "A game in the VideoGameData database."
     safe = lambda v: isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]+", v)
     image = None
-    if g.get("screenshots") and safe(g["screenshots"][0]):
-        image = (f"{IGDB_IMAGES}t_screenshot_huge/{g['screenshots'][0]}.jpg", 1280, 720, "summary_large_image")
-    elif safe(g.get("cover")):
+    if safe(g.get("cover")):
         image = (f"{IGDB_IMAGES}t_cover_big_2x/{g['cover']}.jpg", 528, 748, "summary")
-    out = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-    out += f"<title>{esc(title)} · VideoGameData</title>\n"
+    elif g.get("screenshots") and safe(g["screenshots"][0]):
+        image = (f"{IGDB_IMAGES}t_screenshot_huge/{g['screenshots'][0]}.jpg", 1280, 720, "summary_large_image")
+    out = f"<title>{esc(title)} · VideoGameData</title>\n"
     out += f'<meta name="description" content="{esc(desc)}">\n'
     out += '<meta property="og:site_name" content="VideoGameData">\n<meta property="og:type" content="website">\n'
     out += f'<meta property="og:title" content="{esc(title)}">\n'
@@ -188,12 +188,17 @@ def share_page(g, gid, redirect):
         out += f'<meta property="og:image" content="{esc(image[0])}">\n'
         out += f'<meta property="og:image:width" content="{image[1]}">\n'
         out += f'<meta property="og:image:height" content="{image[2]}">\n'
-    out += f'<meta name="twitter:card" content="{image[3] if image else "summary"}">\n'
-    out += '<meta name="theme-color" content="#3987e5">\n'
-    out += f'<meta http-equiv="refresh" content="0; url={esc(redirect)}">\n'
-    out += f"<script>location.replace({json.dumps(redirect)});</script>\n</head>\n"
-    out += f'<body><p><a href="{esc(redirect)}">{esc(title)}</a> on VideoGameData</p></body>\n</html>\n'
-    return out
+    out += f'<meta name="twitter:card" content="{image[3] if image else "summary"}">'
+    return out, title
+
+
+def tiny_page(g, gid):
+    """A small page with the tags that sends people on to the app (for hosts without PHP)."""
+    tags, title = share_tags(g, gid)
+    to = f"/#/game/{gid}"
+    return ('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n' + tags + "\n"
+            f'<meta http-equiv="refresh" content="0; url={to}">\n<script>location.replace({json.dumps(to)});</script>\n</head>\n'
+            f'<body><p><a href="{to}">{html.escape(title, quote=True).replace("&#x27;", "&#039;")}</a> on VideoGameData</p></body>\n</html>\n')
 
 
 def build_details(con, vdir, share_dir=None, share_n=0):
@@ -271,7 +276,7 @@ def build_details(con, vdir, share_dir=None, share_n=0):
         if gid in share_ids:
             share_dir.mkdir(parents=True, exist_ok=True)
             tmp = share_dir / f"{gid}.html.tmp"
-            tmp.write_text(share_page(current[str(gid)], gid, f"/#/game/{gid}"), encoding="utf-8")
+            tmp.write_text(tiny_page(current[str(gid)], gid), encoding="utf-8")
             os.replace(tmp, share_dir / f"{gid}.html")
             shared += 1
     flush()
@@ -343,7 +348,12 @@ def build_data(src, out, keep, share_n=0):
 
 
 def htaccess_body(php=True):
-    rewrite = ("""  RewriteRule ^game/([0-9]+)/?$ share.php?id=$1 [L]\n""" if php else "")
+    if php:     # share.php returns the app with that game's preview tags
+        game = "  RewriteRule ^game/([0-9]+)/?$ share.php?id=$1 [L]\n"
+    else:       # no PHP: a ready-made preview page for popular games, otherwise the plain app
+        game = ("  RewriteCond %{DOCUMENT_ROOT}/game-pages/$1.html -f\n"
+                "  RewriteRule ^game/([0-9]+)/?$ game-pages/$1.html [L]\n"
+                "  RewriteRule ^game/([0-9]+)/?$ index.html [L]\n")
     return f"""Options -Indexes
 <IfModule mod_headers.c>
   Header set X-Content-Type-Options "nosniff"
@@ -355,11 +365,9 @@ def htaccess_body(php=True):
 </IfModule>
 <IfModule mod_rewrite.c>
   RewriteEngine On
-  # /game/123 is the link to share (chat apps read its preview tags). A ready-made page is used if one was
-  # built (--share-pages), otherwise share.php makes one from the game's data.
-  RewriteCond %{{DOCUMENT_ROOT}}/game-pages/$1.html -f
-  RewriteRule ^game/([0-9]+)/?$ game-pages/$1.html [L]
-{rewrite}</IfModule>
+  # the app's own pages are real URLs: /game/123 and /stats open the app (and /game/123 carries its preview tags)
+{game}  RewriteRule ^stats/?$ index.html [L]
+</IfModule>
 """
 
 
@@ -386,14 +394,14 @@ def update_htaccess(path, php=True):
         log(f"Note: added a marked igdb-explorer section to your existing {path}; the rest is untouched.")
 
 
-def publish_frontend(out, php=True):
+def publish_frontend(out, php=True, base="/"):
     out.mkdir(parents=True, exist_ok=True)
     static = HERE / "explorer" / "static"
     api_js = (static / "static-api.js").read_bytes()
     analysis_js = (static / "analysis.js").read_bytes()
     version = hashlib.sha1(api_js + analysis_js).hexdigest()[:10]
     html = (static / "index.html").read_text(encoding="utf-8")
-    html = (html.replace("__BASE__", "./")
+    html = (html.replace("__BASE__", base)
             .replace("<!--ANALYSIS_JS-->", f'<script src="analysis.js?v={version}"></script>')
             .replace("<!--STATIC_API-->", f'<script src="static-api.js?v={version}"></script>')
             .replace("__SHARE_MODE__", "php" if php else "pages"))
@@ -414,6 +422,8 @@ def main():
     ap.add_argument("--src", default=str(HERE / "data" / "igdb"), help="folder with the .jsonl files")
     ap.add_argument("--keep", type=int, default=2, help="data versions to keep (default 2)")
     ap.add_argument("--frontend-only", action="store_true", help="only refresh the page and its scripts")
+    ap.add_argument("--base", default="/", metavar="PATH",
+                    help="URL path the site is served under (default /; use /games/ if mounted under a path)")
     ap.add_argument("--no-php", action="store_true",
                     help="host can't run PHP: skip share.php and rely on --share-pages N alone")
     ap.add_argument("--share-pages", type=int, default=0, metavar="N",
@@ -426,7 +436,8 @@ def main():
         if not (src / "games.jsonl").exists():
             sys.exit(f"{src / 'games.jsonl'} not found. Run fetch_igdb.py first.")
         build_data(src, out, max(1, args.keep), max(0, args.share_pages))
-    publish_frontend(out, php=not args.no_php)
+    base = "/" + args.base.strip("/") + "/" if args.base.strip("/") else "/"
+    publish_frontend(out, php=not args.no_php, base=base)
     log(f"\nDone. Open {out / 'index.html'} through a web server (not by double-clicking the file).")
 
 
