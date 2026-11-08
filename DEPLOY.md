@@ -90,6 +90,9 @@ python build_static.py --out ~/games.brutalc.com --frontend-only
 `--frontend-only` refreshes just the page and script, so it takes a second. I'll say when a change
 also needs the data files rebuilt; then run the same command without `--frontend-only`.
 
+**The Relationships charts need no data rebuild.** They are calculated in the visitor's browser
+from the same games table the site already has, so `--frontend-only` is enough to get them.
+
 **Time to beat needs one full rebuild.** The time-to-beat feature adds new columns to the data
 files, so after pulling it, run the build once **without** `--frontend-only` (the same command as
 step 4). Until then the site keeps working but hides the time-to-beat controls and charts. The

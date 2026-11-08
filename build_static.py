@@ -10,7 +10,7 @@ It reads only the IGDB tables the explorer shows (games, covers, genres, platfor
 game_modes, player_perspectives, companies, involved_companies, screenshots, game_time_to_beats) from
 data/igdb/*.jsonl and writes into --out:
 
-  index.html, static-api.js      the page (same UI as `python explorer/server.py`)
+  index.html, static-api.js, analysis.js   the page (same UI as `python explorer/server.py`)
   .htaccess                      Apache settings (only if none exists yet; see below)
   data/manifest.json             points at the current data version; always re-checked
   data/<version>/games.dat       one compact, gzipped table of every game (search/filter/sort)
@@ -21,7 +21,7 @@ Publishing is safe to run while people browse: the new version is written to its
 and only then does manifest.json switch over. The newest 2 versions are kept, older ones deleted.
 
 Options:
-  --frontend-only   just refresh index.html / static-api.js (after a `git pull`), no data rebuild
+  --frontend-only   just refresh index.html, static-api.js and analysis.js (after a `git pull`), no data rebuild
   --src DIR         where the .jsonl files are (default data/igdb)
   --keep N          how many data versions to keep (default 2)
 
@@ -110,31 +110,6 @@ def write_json(path, obj):
                     encoding="utf-8")
 
 
-def build_games_table(con, vdir):
-    """The one table the browser searches: every named game, as parallel columns."""
-    cols = {k: [] for k in ("id", "name", "year", "rel", "rating", "votes", "cover", "genres", "platforms",
-                            "ttb", "ttbn")}
-    cur = con.execute(f"""
-        SELECT g.id, g.name, {Store.YEAR} AS year,
-               CAST(floor(g.first_release_date / 86400.0) AS INTEGER) AS rel,
-               CAST(round(g.total_rating * 100) AS INTEGER) AS rating,
-               g.total_rating_count AS votes, cv.image_id AS cover, g.genres, g.platforms,
-               {TTB10} AS ttb, tb.reports AS ttbn
-        FROM games g LEFT JOIN covers cv ON cv.id = g.cover
-        LEFT JOIN {TTB_SUB} tb ON tb.game_id = g.id
-        WHERE g.name IS NOT NULL ORDER BY g.id""")
-    while True:
-        rows = cur.fetchmany(50000)
-        if not rows:
-            break
-        for r in rows:
-            for key, value in zip(cols, r):
-                cols[key].append(list(value) if key in ("genres", "platforms") and value else
-                                 ([] if key in ("genres", "platforms") else value))
-    write_gz(vdir / "games.dat", cols)
-    return len(cols["id"])
-
-
 def build_details(con, vdir):
     """Per-game detail pages, SHARD games per file, streamed so memory stays small."""
     def names(table):
@@ -144,21 +119,31 @@ def build_details(con, vdir):
     def pairs(table, ids):
         return [(i, lookup[table][i]) for i in (ids or []) if i in lookup[table]]
 
-    cur = con.execute(f"""
-        SELECT g.id, g.summary, g.storyline, g.first_release_date, g.total_rating,
-               g.total_rating_count, g.rating, g.aggregated_rating, g.url,
-               g.genres, g.platforms, g.themes, g.game_modes, g.player_perspectives, g.similar_games,
-               (ss.shots)[1:12], co.devs, co.pubs, tb.hastily, tb.normally, tb.completely, tb.reports
-        FROM games g
-        LEFT JOIN {TTB_SUB} tb ON tb.game_id = g.id
-        LEFT JOIN (SELECT game, list(image_id ORDER BY id) AS shots FROM screenshots GROUP BY game) ss
-               ON ss.game = g.id
-        LEFT JOIN (SELECT ic.game,
-                          list(c.name ORDER BY ic.id) FILTER (WHERE ic.developer) AS devs,
-                          list(c.name ORDER BY ic.id) FILTER (WHERE ic.publisher) AS pubs
-                   FROM involved_companies ic JOIN companies c ON c.id = ic.company
-                   GROUP BY ic.game) co ON co.game = g.id
-        WHERE g.name IS NOT NULL ORDER BY g.id""")
+    # Per-game extras are aggregated once into small temporary tables; the games are then read in
+    # ID ranges (whole shards at a time). Nothing ever sorts or joins all games at once, so memory
+    # stays low even with a 512 MB limit.
+    con.execute("CREATE TEMP TABLE ss_agg AS SELECT game, (list(image_id ORDER BY id))[1:12] AS shots "
+                "FROM screenshots GROUP BY game")
+    con.execute("""CREATE TEMP TABLE co_agg AS
+        SELECT ic.game, list(c.name ORDER BY ic.id) FILTER (WHERE ic.developer) AS devs,
+               list(c.name ORDER BY ic.id) FILTER (WHERE ic.publisher) AS pubs
+        FROM involved_companies ic JOIN companies c ON c.id = ic.company GROUP BY ic.game""")
+    con.execute(f"CREATE TEMP TABLE tb_best AS SELECT * FROM {TTB_SUB} t")
+    top = con.execute("SELECT coalesce(max(id), 0) FROM games").fetchone()[0]
+    chunk = SHARD * 20                                  # ~10,000 games per read
+
+    def read_games():
+        for lo in range(0, top + 1, chunk):
+            yield from con.execute(f"""
+                SELECT g.id, g.summary, g.storyline, g.first_release_date, g.total_rating,
+                       g.total_rating_count, g.rating, g.aggregated_rating, g.url,
+                       g.genres, g.platforms, g.themes, g.game_modes, g.player_perspectives, g.similar_games,
+                       ss.shots, co.devs, co.pubs, tb.hastily, tb.normally, tb.completely, tb.reports
+                FROM games g
+                LEFT JOIN tb_best tb ON tb.game_id = g.id
+                LEFT JOIN ss_agg ss ON ss.game = g.id
+                LEFT JOIN co_agg co ON co.game = g.id
+                WHERE g.name IS NOT NULL AND g.id >= {lo} AND g.id < {lo + chunk} ORDER BY g.id""").fetchall()
     shard, current, files = None, {}, 0
 
     def flush():
@@ -168,30 +153,26 @@ def build_details(con, vdir):
             files += 1
             current = {}
 
-    while True:
-        rows = cur.fetchmany(5000)
-        if not rows:
-            break
-        for (gid, summary, story, released, rating, votes, urating, crating, url, genres, plats,
-             themes, modes, persp, similar, shots, devs, pubs, t_fast, t_norm, t_full, t_n) in rows:
-            if gid // SHARD != shard:
-                flush()
-                shard = gid // SHARD
-            gp, pp = pairs("genres", genres), pairs("platforms", plats)
-            detail = {
-                "summary": summary, "storyline": story, "release": released, "rating": rating,
-                "votes": votes, "user_rating": urating, "critic_rating": crating, "url": url,
-                "genres": [n for _, n in gp], "genre_ids": [i for i, _ in gp],
-                "platforms": [n for _, n in pp], "platform_ids": [i for i, _ in pp],
-                "themes": [n for _, n in pairs("themes", themes)],
-                "modes": [n for _, n in pairs("game_modes", modes)],
-                "perspectives": [n for _, n in pairs("player_perspectives", persp)],
-                "screenshots": shots, "developers": devs, "publishers": pubs,
-                "similar_ids": (similar or [])[:12],
-                "time_to_beat": ({"hastily": t_fast, "normally": t_norm, "completely": t_full, "count": t_n}
-                                 if any(v is not None for v in (t_fast, t_norm, t_full)) else None),
-            }
-            current[str(gid)] = {k: v for k, v in detail.items() if v not in (None, [], "")}
+    for (gid, summary, story, released, rating, votes, urating, crating, url, genres, plats,
+         themes, modes, persp, similar, shots, devs, pubs, t_fast, t_norm, t_full, t_n) in read_games():
+        if gid // SHARD != shard:
+            flush()
+            shard = gid // SHARD
+        gp, pp = pairs("genres", genres), pairs("platforms", plats)
+        detail = {
+            "summary": summary, "storyline": story, "release": released, "rating": rating,
+            "votes": votes, "user_rating": urating, "critic_rating": crating, "url": url,
+            "genres": [n for _, n in gp], "genre_ids": [i for i, _ in gp],
+            "platforms": [n for _, n in pp], "platform_ids": [i for i, _ in pp],
+            "themes": [n for _, n in pairs("themes", themes)],
+            "modes": [n for _, n in pairs("game_modes", modes)],
+            "perspectives": [n for _, n in pairs("player_perspectives", persp)],
+            "screenshots": shots, "developers": devs, "publishers": pubs,
+            "similar_ids": (similar or [])[:12],
+            "time_to_beat": ({"hastily": t_fast, "normally": t_norm, "completely": t_full, "count": t_n}
+                             if any(v is not None for v in (t_fast, t_norm, t_full)) else None),
+        }
+        current[str(gid)] = {k: v for k, v in detail.items() if v not in (None, [], "")}
     flush()
     return files
 
@@ -210,14 +191,17 @@ def build_data(src, out, keep):
     shutil.rmtree(staging, ignore_errors=True)
     try:
         load_tables(con, src)
-        log("Writing the games table…")
-        n = build_games_table(con, staging)
-        log(f"  {n:,} games")
         log("Writing game detail files…")
         files = build_details(con, staging)
         log(f"  {files:,} files")
         con.close()
         store = Store(tmp_db)             # same queries as the Python explorer, so both agree
+        log("Writing the games table…")
+        cols = store.columns()
+        n = len(cols["id"])
+        write_gz(staging / "games.dat", cols)
+        del cols
+        log(f"  {n:,} games")
         write_json(staging / "facets.json", store.facets())
         write_json(staging / "stats.json", store.stats())
         del store
@@ -260,11 +244,14 @@ def publish_frontend(out):
     out.mkdir(parents=True, exist_ok=True)
     static = HERE / "explorer" / "static"
     api_js = (static / "static-api.js").read_bytes()
-    version = hashlib.sha1(api_js).hexdigest()[:10]
+    analysis_js = (static / "analysis.js").read_bytes()
+    version = hashlib.sha1(api_js + analysis_js).hexdigest()[:10]
     html = (static / "index.html").read_text(encoding="utf-8")
-    html = html.replace("__BASE__", "./").replace(
-        "<!--STATIC_API-->", f'<script src="static-api.js?v={version}"></script>')
+    html = (html.replace("__BASE__", "./")
+            .replace("<!--ANALYSIS_JS-->", f'<script src="analysis.js?v={version}"></script>')
+            .replace("<!--STATIC_API-->", f'<script src="static-api.js?v={version}"></script>'))
     (out / "static-api.js").write_bytes(api_js)
+    (out / "analysis.js").write_bytes(analysis_js)
     (out / "index.html").write_text(html, encoding="utf-8")
     ht = out / ".htaccess"
     if not ht.exists() or HTACCESS_MARK in ht.read_text(errors="replace"):
@@ -280,7 +267,7 @@ def main():
     ap.add_argument("--out", default="site", help="folder to write the website into (default: site)")
     ap.add_argument("--src", default=str(HERE / "data" / "igdb"), help="folder with the .jsonl files")
     ap.add_argument("--keep", type=int, default=2, help="data versions to keep (default 2)")
-    ap.add_argument("--frontend-only", action="store_true", help="only refresh index.html and static-api.js")
+    ap.add_argument("--frontend-only", action="store_true", help="only refresh the page and its scripts")
     args = ap.parse_args()
 
     out = Path(args.out).expanduser().resolve()

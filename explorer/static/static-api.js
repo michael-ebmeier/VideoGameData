@@ -37,25 +37,10 @@
 
   const games = () => once("games", async () => {
     const d = await parse(await bytes(await versioned("games.dat")));
-    const ints = (arr, none) => Int32Array.from(arr, v => (v === null ? none : v));
-    return {
-      n: d.id.length,
-      id: Int32Array.from(d.id),
-      name: d.name,
-      lower: d.name.map(s => s.toLowerCase()),
-      year: ints(d.year, NULL),
-      rel: ints(d.rel, NULL),
-      rating: ints(d.rating, -1),     // hundredths of a point, so 68.62 is stored as 6862
-      votes: ints(d.votes, -1),
-      // Time to beat: tenths of an hour (12.5 h is 125) and the number of reports behind it. Data
-      // built before this existed has neither column; treat that as "no time-to-beat data".
-      ttb: d.ttb ? ints(d.ttb, -1) : new Int32Array(d.id.length).fill(-1),
-      ttbn: d.ttbn ? ints(d.ttbn, -1) : new Int32Array(d.id.length).fill(-1),
-      cover: d.cover,
-      genres: d.genres,
-      platforms: d.platforms,
-      orders: {},
-    };
+    const G = IGDB_ANALYSIS.buildColumns(d);           // shared with the analysis code (analysis.js)
+    G.lower = d.name.map(s => s.toLowerCase());
+    G.orders = {};
+    return G;
   });
   const facets = () => once("facets", async () => parse(await bytes(await versioned("facets.json"))));
   const stats = () => once("stats", async () => parse(await bytes(await versioned("stats.json"))));
@@ -169,5 +154,5 @@
     throw new Error("not found");
   }
 
-  window.IGDB_STATIC = { api };
+  window.IGDB_STATIC = { api, columns: games };
 })();

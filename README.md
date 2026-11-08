@@ -90,6 +90,17 @@ otherwise you get title placeholders. Options: `--port 9000`, `--no-open`, `--db
 
 Stop the server with Ctrl+C. Rebuild the database (`load_duckdb.py`) only while it is stopped.
 
+## Relationships (Stats page)
+
+The Stats page ends with a **Relationships** section. A correlation matrix shows how rating, time to
+beat, release year, number of ratings and number of platforms move together (Spearman's rank
+correlation by default, or Pearson's). Below it you can compare any two measures: pick the X and Y
+axes, or one of the preset questions. The chart follows the choice: two measures give a scatter plot
+with a trend line, a genre or platform against a measure gives bars (average or median, optionally
+as the difference from all games), and two categories give a grid of how many games have both. The
+numbers are calculated in the browser (`explorer/static/analysis.js`) from the games table, so this
+needs no extra data.
+
 ## Putting it on a website
 
 The explorer can be built as a **static website**: plain files you can host anywhere, with no

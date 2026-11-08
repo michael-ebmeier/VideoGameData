@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <base href="__BASE__">
+<!--ANALYSIS_JS-->
 <!--STATIC_API-->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VideoGameData Explorer</title>
@@ -20,6 +21,11 @@
     --accent-ink: #ffffff;
     --star: #f2b705;
     --radius: 8px;
+    /* heatmap ramp (one hue; low to high). In dark mode it flips so that MORE is lighter. */
+    --seq-1: #0d366b; --seq-2: #104281; --seq-3: #184f95; --seq-4: #256abf; --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #cde2fb;
+    /* diverging pair for correlations: red (negative) <-> neutral <-> blue (positive), four equal steps per arm */
+    --div-neg-4: #e66767; --div-neg-3: #b85d5a; --div-neg-2: #8c524e; --div-neg-1: #624541; --div-0: #383835;
+    --div-pos-1: #3c4c5e; --div-pos-2: #3e6089; --div-pos-3: #3d73b6; --div-pos-4: #3987e5;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
@@ -32,6 +38,9 @@
       --text-2: #3f4852;
       --muted: #5b6670;
       --accent: #2a78d6;    /* single data series colour (light step) */
+      --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #6da7ec; --seq-4: #3987e5; --seq-5: #256abf; --seq-6: #184f95; --seq-7: #0d366b;
+      --div-neg-4: #e34948; --div-neg-3: #ec7971; --div-neg-2: #f1a299; --div-neg-1: #f3c9c2; --div-0: #f0efec;
+      --div-pos-1: #c0d2e9; --div-pos-2: #90b5e4; --div-pos-3: #6097de; --div-pos-4: #2a78d6;
     }
   }
   * { box-sizing: border-box; }
@@ -177,6 +186,29 @@
   table.data td, table.data th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); }
   table.data td:last-child, table.data th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
   .table-wrap { max-height: 280px; overflow: auto; }
+  .section-title { font-size: 20px; margin: 36px 0 4px; }
+  .rel-charts { grid-template-columns: 1fr; margin-top: 14px; }
+  .chart .dot { fill: var(--accent); fill-opacity: .85; stroke: var(--surface); stroke-width: 2; }
+  .chart .dot.hl { fill: none; stroke: var(--text); stroke-width: 2; pointer-events: none; }
+  .chart .trend { stroke: var(--text-2); stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+  .chart .ref { stroke: var(--text-2); stroke-width: 1.5; pointer-events: none; }
+  .chart text.axis-title { fill: var(--text-2); font-size: 12px; }
+  .chart text.cell-text { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
+  .chart .band .cell { transition: opacity .1s; }
+  .chart .band:hover .cell, .chart .band:focus .cell { opacity: .8; }
+  .chart .band.click { cursor: pointer; }
+  .seg-row { display: flex; margin: 8px 0 2px; }
+  .seg { background: none; border: 1px solid var(--line); padding: 4px 12px; color: var(--text-2); cursor: pointer; }
+  .seg:first-child { border-radius: 6px 0 0 6px; } .seg:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+  .seg.on { background: var(--surface-2); color: var(--text); border-color: var(--accent); position: relative; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; }
+  button.chip { font: inherit; font-size: 13px; cursor: pointer; }
+  button.chip:hover { border-color: var(--accent); color: var(--text); }
+  .rel-controls { margin-bottom: 6px; }
+  .rel-note { max-width: 90ch; }
+  .legend { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 2px; font-size: 11px; color: var(--muted); }
+  .legend .lg { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 46px; }
+  .legend i { display: block; width: 100%; height: 10px; border-radius: 2px; }
   .tip {
     position: fixed; z-index: 50; pointer-events: none; background: var(--surface-2); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 10px; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.3); display: none;
@@ -299,7 +331,7 @@ async function route() {
   document.getElementById("q").value = path === "/" ? (params.get("q") || "") : "";
   window.scrollTo(0, 0);
   try {
-    if (path === "/stats") await statsPage();
+    if (path === "/stats") await statsPage(params);
     else if (path.startsWith("/game/")) await gamePage(path.split("/")[2]);
     else await browsePage(params);
   } catch (e) {
@@ -442,7 +474,7 @@ const roundRight = (x, y, w, hgt, r) => {        // 4px rounded data end (right)
 function drawChart(host, rows, opts) {
   const { horizontal = false, unit = "games", labelOf = r => String(r.label) } = opts;
   const W = Math.max(280, host.clientWidth), ink = "var(--muted)";
-  const max = Math.max(1, ...rows.map(r => r.value));
+  const max = Math.max(1, ...rows.map(r => r.value), opts.reference ? opts.reference.value : 0);
   const step = niceStep(max / 4), top = Math.ceil(max / step) * step;
   let svg;
 
@@ -473,7 +505,7 @@ function drawChart(host, rows, opts) {
         svg.append(s("text", { class: "strong", x: Math.min(Math.max(cx, m.l + 14), W - m.r - 14), y: y(r.value) - 5, "text-anchor": "middle", text: fmt(r.value) }));
     });
   } else {
-    const lw = Math.min(170, W * 0.38), rowH = 28, m = { t: 4, r: 56 }, H = rows.length * rowH + m.t, bh = 14;
+    const lw = Math.min(170, W * 0.38), rowH = 28, m = { t: 4, r: 56 }, H = rows.length * rowH + m.t + (opts.reference ? 22 : 0), bh = 14;
     const iw = W - lw - m.r;
     svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img" });
     rows.forEach((r, i) => {
@@ -490,6 +522,11 @@ function drawChart(host, rows, opts) {
       g.addEventListener("blur", hideTip);
       svg.append(g);
     });
+    if (opts.reference) {                       // a hairline marking the overall value, labelled underneath
+      const x = lw + (opts.reference.value / max) * iw, bottom = rows.length * rowH + m.t;
+      svg.append(s("line", { class: "ref", x1: x, x2: x, y1: m.t, y2: bottom }));
+      svg.append(s("text", { class: "strong", x: Math.min(Math.max(x, lw + 60), W - 70), y: bottom + 15, "text-anchor": "middle", text: opts.reference.label }));
+    }
   }
   host.replaceChildren(svg);
 }
@@ -514,7 +551,361 @@ function chartCard(title, sub, rows, opts) {
   return el;
 }
 
-async function statsPage() {
+/* ---------- relationships: correlation matrix + a comparison with changeable axes ---------- */
+const AXES = [["genre", "Genre"], ["platform", "Platform"], ["year", "Release year"], ["rating", "Average rating"],
+              ["ttb", "Time to beat"], ["votes", "Number of ratings"], ["platforms", "Number of platforms"]];
+const AXIS_LABEL = Object.fromEntries(AXES);
+const PRESETS = [
+  ["Do longer games rate higher?", "ttb", "rating"], ["Are newer games rated higher?", "year", "rating"],
+  ["Does popularity track quality?", "votes", "rating"], ["Are games getting longer?", "year", "ttb"],
+  ["Which genres rate best?", "genre", "rating"], ["Which genres take longest?", "genre", "ttb"],
+  ["Genre mix by platform", "platform", "genre"], ["Which genres go together?", "genre", "genre"],
+];
+const MIN_PAIR_N = 30;
+
+let columnsP = null;
+function getColumns() {
+  if (!columnsP) {
+    columnsP = (window.IGDB_STATIC ? IGDB_STATIC.columns() : api("api/columns").then(IGDB_ANALYSIS.buildColumns))
+      .catch(e => { columnsP = null; throw e; });
+  }
+  return columnsP;
+}
+
+/* colours: chart tokens from the stylesheet; text inside a fill is white or near-black, whichever reads better */
+const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+function luminance(hex) {
+  const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+function inkOn(hex) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return "#ffffff";
+  const L = luminance(hex);
+  return 1.05 / (L + 0.05) >= (L + 0.05) / (luminance("#0b0b0b") + 0.05) ? "#ffffff" : "#0b0b0b";
+}
+const seqVar = (v, max, linear) => `--seq-${max > 0 ? Math.min(6, Math.floor((linear ? v / max : Math.sqrt(v / max)) * 7)) + 1 : 1}`;
+function divVar(r) {
+  const a = Math.abs(r), step = a < 0.1 ? 0 : a < 0.3 ? 1 : a < 0.5 ? 2 : a < 0.7 ? 3 : 4;
+  return step === 0 ? "--div-0" : `--div-${r > 0 ? "pos" : "neg"}-${step}`;
+}
+const MINUS = "−";
+const signed = v => (v < 0 ? MINUS : "") + Math.abs(v).toFixed(2);
+const compact = n => (n >= 1e6 ? n / 1e6 + "M" : n >= 1e3 ? n / 1e3 + "K" : String(n));
+
+function fmtVal(key, v) {
+  return key === "ttb" ? hoursText(v) : key === "rating" ? v.toFixed(1) : key === "votes" ? fmt(Math.round(v)) : String(Math.round(v * 10) / 10);
+}
+const axisName = key => {
+  const m = IGDB_ANALYSIS.METRICS[key];
+  return m.label + (key === "rating" ? " (0–100)" : key === "ttb" ? " (hours, log scale)" : key === "votes" ? " (log scale)" : "");
+};
+
+function axisTicks(key, lo, hi, room) {
+  const m = IGDB_ANALYSIS.METRICS[key], out = [];
+  if (m.log) {
+    let marks = [1, 2, 5];
+    const gather = ms => { const r = []; for (let k = Math.floor(lo) - 1; k <= Math.ceil(hi) + 1; k++) for (const x of ms) { const v = x * 10 ** k, t = Math.log10(v); if (t >= lo - 1e-9 && t <= hi + 1e-9) r.push({ t, v }); } return r; };
+    let ticks = gather(marks);
+    if (ticks.length > room) ticks = gather([1]);
+    for (const { t, v } of ticks) out.push({ t, label: key === "ttb" ? hoursText(v) : compact(v) });
+  } else {
+    const step = niceStep((hi - lo) / Math.max(2, room));
+    for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step) out.push({ t, label: String(Math.round(t * 100) / 100) });
+  }
+  return out;
+}
+
+/* A small card with a table-view toggle; `draw(host)` renders the chart, `table()` builds the table. */
+function vizCard({ title, sub, headExtra, draw, table }) {
+  const host = h("div", { class: "chart" }), tableWrap = h("div", { class: "table-wrap", hidden: true });
+  let drawFn = draw, tableFn = table;
+  const toggle = h("button", { type: "button", text: "View as table", onclick: () => {
+    const showTable = tableWrap.hidden;
+    if (showTable) tableWrap.replaceChildren(tableFn());
+    tableWrap.hidden = !showTable; host.hidden = showTable;
+    toggle.textContent = showTable ? "View as chart" : "View as table";
+    if (!showTable) redraw();
+  } });
+  const redraw = () => { if (!host.hidden && host.clientWidth) drawFn(host); };
+  const subEl = h("div", { class: "chart-sub", text: sub });
+  const el = h("div", { class: "chart-card" }, h("div", { class: "chart-head" }, h("h2", { text: title }), toggle),
+    headExtra, subEl, host, tableWrap);
+  el.redraw = redraw;
+  el.update = (next) => { drawFn = next.draw; tableFn = next.table; if (next.sub != null) subEl.textContent = next.sub; if (!tableWrap.hidden) tableWrap.replaceChildren(tableFn()); redraw(); };
+  return el;
+}
+
+const roundLeft = (x, y, w, hgt, r) => {          // 4px rounded left end, square at the zero line (x is the right edge)
+  r = Math.min(r, hgt / 2, w);
+  return `M${x},${y}H${x - w + r}Q${x - w},${y} ${x - w},${y + r}V${y + hgt - r}Q${x - w},${y + hgt} ${x - w + r},${y + hgt}H${x}Z`;
+};
+const signedVal = (v, key) => (v < 0 ? MINUS : v > 0 ? "+" : "") + (key === "ttb" ? hoursText(Math.abs(v)) : String(Math.abs(Math.round(v * 10) / 10)));
+
+/* Horizontal bars of each category's difference from the all-games value: blue above it, red below. */
+function drawDiffBars(host, rows, o) {
+  const W = Math.max(300, host.clientWidth), lw = Math.min(170, W * 0.34), rowH = 28, bh = 14, top = 4, H = rows.length * rowH + top + 20;
+  const lo0 = Math.min(0, ...rows.map(r => r.diff)), hi0 = Math.max(0, ...rows.map(r => r.diff)), pad = (hi0 - lo0) * 0.16 || 1;
+  const lo = lo0 < 0 ? lo0 - pad : 0, hi = hi0 > 0 ? hi0 + pad : 0, iw = W - lw - 12;
+  const X = v => lw + ((v - lo) / (hi - lo)) * iw, zero = X(0);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": o.aria });
+  rows.forEach((r, i) => {
+    const yy = top + i * rowH, up = r.diff >= 0, w = Math.max(2, Math.abs(X(r.diff) - zero));
+    const g = s("g", { class: "band", tabindex: 0, "aria-label": `${r.label}: ${signedVal(r.diff, o.key)} versus all games` });
+    g.append(s("text", { x: lw - 8, y: yy + rowH / 2 + 4, "text-anchor": "end", text: r.label.length > 26 ? r.label.slice(0, 25) + "…" : r.label }));
+    g.append(s("path", { class: "mark", style: `fill:var(${up ? "--div-pos-4" : "--div-neg-4"})`, d: (up ? roundRight : roundLeft)(zero, yy + (rowH - bh) / 2, w, bh, 4) }));
+    g.append(s("text", { class: "strong", x: up ? zero + w + 6 : zero - w - 6, y: yy + rowH / 2 + 4, "text-anchor": up ? "start" : "end", text: signedVal(r.diff, o.key) }));
+    g.append(s("rect", { class: "hit", x: 0, y: yy, width: W, height: rowH }));
+    const tip = [signedVal(r.diff, o.key), `${r.label} · ${o.unit} vs all games (${o.overallText})${nOf(r)}`];
+    g.addEventListener("pointermove", e => showTip(e, tip[0], tip[1]));
+    g.addEventListener("pointerleave", hideTip);
+    g.addEventListener("focus", () => tipAtElement(g, tip[0], tip[1]));
+    g.addEventListener("blur", hideTip);
+    svg.append(g);
+  });
+  svg.append(s("line", { class: "ref", x1: zero, x2: zero, y1: top, y2: top + rows.length * rowH }));
+  svg.append(s("text", { class: "strong", x: Math.min(Math.max(zero, lw + 50), W - 60), y: top + rows.length * rowH + 15, "text-anchor": "middle", text: `all games ${o.overallText}` }));
+  host.replaceChildren(svg);
+}
+
+/* A grid of coloured cells with row/column labels (used by the correlation matrix and the category grid). */
+function drawGrid(host, g) {
+  const W = Math.max(300, host.clientWidth), rowW = Math.min(170, Math.max(92, W * 0.26));
+  const nC = g.cols.length, nR = g.rows.length;
+  const cellW = Math.max(30, Math.min(110, (W - rowW - 8) / nC)), cellH = Math.max(26, Math.min(40, cellW * 0.62));
+  const topH = g.rotate ? 100 : 28, VW = rowW + cellW * nC + 8, VH = topH + cellH * nR + 6;
+  const svg = s("svg", { viewBox: `0 0 ${VW} ${VH}`, height: Math.min(VH, 560), role: "img", "aria-label": g.aria || "grid" });
+  const clip = (t, n) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
+  g.cols.forEach((c, j) => {
+    const x = rowW + j * cellW + cellW / 2;
+    svg.append(g.rotate
+      ? s("text", { x, y: topH - 8, transform: `rotate(-40 ${x} ${topH - 8})`, "text-anchor": "start", text: clip(c, 20) })
+      : s("text", { x, y: topH - 8, "text-anchor": "middle", text: clip(c, Math.floor(cellW / 6)) }));
+  });
+  g.rows.forEach((rLabel, i) => {
+    svg.append(s("text", { x: rowW - 8, y: topH + i * cellH + cellH / 2 + 4, "text-anchor": "end", text: clip(rLabel, Math.floor(rowW / 6.2)) }));
+    g.cols.forEach((_, j) => {
+      const c = g.cell(i, j);
+      if (!c) return;
+      const fill = cssVar(c.fill) || "#888888", gx = rowW + j * cellW, gy = topH + i * cellH;
+      const cellG = s("g", { class: "band" + (c.onclick ? " click" : ""), tabindex: 0, role: "img", "aria-label": c.aria || c.text });
+      cellG.append(s("rect", { x: gx + 1, y: gy + 1, width: cellW - 2, height: cellH - 2, rx: 3, style: `fill:var(${c.fill})`, class: "cell" }));
+      cellG.append(s("text", { x: gx + cellW / 2, y: gy + cellH / 2 + 4, "text-anchor": "middle", class: "cell-text", style: `fill:${c.muted ? "var(--muted)" : inkOn(fill)}`, text: c.text }));
+      cellG.append(s("rect", { class: "hit", x: gx, y: gy, width: cellW, height: cellH }));
+      cellG.addEventListener("pointermove", e => showTip(e, c.tip[0], c.tip[1]));
+      cellG.addEventListener("pointerleave", hideTip);
+      cellG.addEventListener("focus", () => tipAtElement(cellG, c.tip[0], c.tip[1]));
+      cellG.addEventListener("blur", hideTip);
+      if (c.onclick) { cellG.addEventListener("click", c.onclick); cellG.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); c.onclick(); } }); }
+      svg.append(cellG);
+    });
+  });
+  host.replaceChildren(svg);
+}
+const swatches = (items) => h("div", { class: "legend" }, items.map(([v, label]) => h("span", { class: "lg" }, h("i", { style: `background:var(${v})` }), label)));
+
+/* Scatter of a sample of games, the fitted trend line, and nearest-point hover (click opens the game). */
+function drawScatter(host, res, G) {
+  const W = Math.max(300, host.clientWidth), H = Math.round(Math.min(460, Math.max(300, W * 0.58)));
+  const m = { l: 60, r: 16, t: 14, b: 50 }, iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const px0 = (res.x1 - res.x0) * 0.03 || 1, py0 = (res.y1 - res.y0) * 0.03 || 1;
+  const x0 = res.x0 - px0, x1 = res.x1 + px0, y0 = res.y0 - py0, y1 = res.y1 + py0;
+  const X = v => m.l + ((v - x0) / (x1 - x0)) * iw, Y = v => m.t + ih - ((v - y0) / (y1 - y0)) * ih;
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": `${AXIS_LABEL[res.xk]} against ${AXIS_LABEL[res.yk]}, ${fmt(res.n)} games` });
+  for (const t of axisTicks(res.yk, y0, y1, Math.round(ih / 55))) {
+    svg.append(s("line", { class: "grid-line", x1: m.l, x2: W - m.r, y1: Y(t.t), y2: Y(t.t) }));
+    svg.append(s("text", { x: m.l - 8, y: Y(t.t) + 4, "text-anchor": "end", text: t.label }));
+  }
+  for (const t of axisTicks(res.xk, x0, x1, Math.round(iw / 90))) {
+    svg.append(s("line", { class: "grid-line", x1: X(t.t), x2: X(t.t), y1: m.t, y2: m.t + ih }));
+    svg.append(s("text", { x: X(t.t), y: m.t + ih + 18, "text-anchor": "middle", text: t.label }));
+  }
+  svg.append(s("text", { class: "axis-title", x: m.l + iw / 2, y: H - 8, "text-anchor": "middle", text: axisName(res.xk) }));
+  svg.append(s("text", { class: "axis-title", x: 14, y: m.t + ih / 2, "text-anchor": "middle", transform: `rotate(-90 14 ${m.t + ih / 2})`, text: axisName(res.yk) }));
+  const clipId = "clip" + Math.random().toString(36).slice(2, 8);
+  svg.append(s("clipPath", { id: clipId }, s("rect", { x: m.l, y: m.t, width: iw, height: ih })));
+  const dots = s("g", {});
+  for (const p of res.points) dots.append(s("circle", { class: "dot", cx: X(p.x), cy: Y(p.y), r: 4 }));
+  svg.append(dots);
+  if (res.slope != null) {
+    svg.append(s("line", { class: "trend", "clip-path": `url(#${clipId})`, x1: X(x0), y1: Y(res.slope * x0 + res.intercept), x2: X(x1), y2: Y(res.slope * x1 + res.intercept) }));
+  }
+  const hl = s("circle", { class: "dot hl", r: 7, style: "display:none" });
+  svg.append(hl);
+  const hit = s("rect", { class: "hit", x: m.l, y: m.t, width: iw, height: ih });
+  let near = null;
+  const nearest = e => {
+    const box = svg.getBoundingClientRect(), k = W / box.width, mx = (e.clientX - box.left) * k, my = (e.clientY - box.top) * k;
+    let best = null, bd = 28 * 28;
+    for (const p of res.points) { const dx = X(p.x) - mx, dy = Y(p.y) - my, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = p; } }
+    return best;
+  };
+  hit.addEventListener("pointermove", e => {
+    near = nearest(e);
+    if (!near) { hl.style.display = "none"; hideTip(); hit.style.cursor = "default"; return; }
+    hl.setAttribute("cx", X(near.x)); hl.setAttribute("cy", Y(near.y)); hl.style.display = "";
+    hit.style.cursor = "pointer";
+    const xv = IGDB_ANALYSIS.METRICS[res.xk].log ? 10 ** near.x : near.x, yv = IGDB_ANALYSIS.METRICS[res.yk].log ? 10 ** near.y : near.y;
+    showTip(e, G.name[near.i], `${AXIS_LABEL[res.xk]}: ${fmtVal(res.xk, xv)} · ${AXIS_LABEL[res.yk]}: ${fmtVal(res.yk, yv)}`);
+  });
+  hit.addEventListener("pointerleave", () => { hl.style.display = "none"; hideTip(); });
+  hit.addEventListener("click", e => { const p = nearest(e); if (p) location.hash = `#/game/${G.id[p.i]}`; });
+  svg.append(hit);
+  host.replaceChildren(svg);
+}
+
+function scatterTable(res, G) {
+  const val = (key, t) => fmtVal(key, IGDB_ANALYSIS.METRICS[key].log ? 10 ** t : t);
+  return h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "Game (sample)" }), h("th", { text: AXIS_LABEL[res.xk] }), h("th", { text: AXIS_LABEL[res.yk] }))),
+    h("tbody", {}, res.points.slice(0, 100).map(p => h("tr", {}, h("td", { text: G.name[p.i] }), h("td", { text: val(res.xk, p.x) }), h("td", { text: val(res.yk, p.y) })))));
+}
+
+/* The correlation matrix card. */
+function matrixCard(G, keys, state, onPick) {
+  const A = IGDB_ANALYSIS, mat = A.correlationMatrix(G, keys), labels = keys.map(k => A.METRICS[k].short);
+  const buttons = [["spearman", "Spearman ρ"], ["pearson", "Pearson r"]].map(([k, t]) => h("button", { type: "button", class: "seg" + (state.method === k ? " on" : ""), text: t,
+    onclick: () => { state.method = k; sync(); card.update(spec()); buttons.forEach((b, i) => b.classList.toggle("on", ["spearman", "pearson"][i] === k)); } }));
+  const spec = () => ({
+    sub: state.method === "spearman"
+      ? "Spearman's ρ: how consistently two measures rise and fall together, ignoring outliers and scale. Click a cell to explore that pair below."
+      : "Pearson's r: a straight-line fit, on a log scale for time to beat and number of ratings. Click a cell to explore that pair below.",
+    draw: host => drawGrid(host, {
+      rows: labels, cols: labels, rotate: true, aria: "Correlation matrix",
+      cell: (i, j) => {
+        if (i === j) return { fill: "--surface-2", text: "–", muted: true, tip: [A.METRICS[keys[i]].label, "compared with itself"] };
+        const d = mat.cells[i][j], r = d && d[state.method], pair = `${A.METRICS[keys[i]].label} and ${A.METRICS[keys[j]].label.toLowerCase()}`;
+        if (r == null || d.n < MIN_PAIR_N) return { fill: "--surface-2", text: "n/a", muted: true, tip: ["Too few games", `${pair}: ${fmt(d ? d.n : 0)} have both`] };
+        return { fill: divVar(r), text: signed(r), aria: `${pair}: ${signed(r)}`, tip: [`${state.method === "spearman" ? "ρ" : "r"} = ${signed(r)}`, `${pair} · ${A.strength(r)} · ${fmt(d.n)} games`], onclick: () => onPick(keys[i], keys[j]) };
+      },
+    }),
+    table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "Pair" }), h("th", { text: "Games with both" }), h("th", { text: "Spearman ρ" }), h("th", { text: "Pearson r" }))),
+      h("tbody", {}, keys.flatMap((a, i) => keys.slice(i + 1).map((b, k) => { const d = mat.cells[i][i + 1 + k];
+        return h("tr", {}, h("td", { text: `${A.METRICS[a].label} / ${A.METRICS[b].label}` }), h("td", { text: fmt(d.n) }), h("td", { text: d.spearman == null ? "–" : signed(d.spearman) }), h("td", { text: d.pearson == null ? "–" : signed(d.pearson) })); })))),
+  });
+  const first = spec();
+  const card = vizCard({ title: "How the measures move together", sub: first.sub, draw: first.draw, table: first.table,
+    headExtra: h("div", { class: "seg-row" }, buttons) });
+  card.append(swatches([["--div-neg-4", `${MINUS}0.7+`], ["--div-neg-3", `${MINUS}0.5`], ["--div-neg-2", `${MINUS}0.3`], ["--div-neg-1", `${MINUS}0.1`], ["--div-0", "0"],
+                        ["--div-pos-1", "0.1"], ["--div-pos-2", "0.3"], ["--div-pos-3", "0.5"], ["--div-pos-4", "0.7+"]]),
+    h("p", { class: "chart-sub", text: `Red: one goes down as the other goes up. Blue: they go up together. Each pair uses only the games that have both figures (ratings need ${A.MIN_RATINGS}+ ratings; time to beat needs ${A.MIN_REPORTS}+ reports). Correlation is not cause.` }));
+  const sync = () => {};
+  return card;
+}
+
+/* The comparison card: pick any two measures; the chart type follows from the choice. */
+function explorerCard(G, state, onChange) {
+  const A = IGDB_ANALYSIS;
+  const axes = AXES.filter(([k]) => k !== "ttb" || facets.has_time_to_beat);
+  const mkSelect = (key) => { const el = h("select", { onchange: e => { state[key] = e.target.value; render(); } }, axes.map(([k, t]) => h("option", { value: k, text: t })));
+    return el; };
+  const xSel = mkSelect("x"), ySel = mkSelect("y");
+  const aggSel = h("select", { onchange: e => { state.agg = e.target.value; render(); } }, [["mean", "Average (mean)"], ["median", "Median"]].map(([v, t]) => h("option", { value: v, text: t })));
+  const viewSel = h("select", { onchange: e => { state.view = e.target.value; render(); } }, [["value", "Values"], ["diff", "Difference from all games"]].map(([v, t]) => h("option", { value: v, text: t })));
+  const showSel = h("select", { onchange: e => { state.show = e.target.value; render(); } }, [["count", "Number of games"], ["pct", "% of each row"]].map(([v, t]) => h("option", { value: v, text: t })));
+  const aggLabel = h("label", { text: "Statistic" }, aggSel), viewLabel = h("label", { text: "View" }, viewSel), showLabel = h("label", { text: "Show" }, showSel);
+  const swap = h("button", { type: "button", text: "⇄ Swap axes", onclick: () => { [state.x, state.y] = [state.y, state.x]; render(); } });
+  const presets = h("div", { class: "presets" }, PRESETS.filter(([, a, b]) => axes.some(([k]) => k === a) && axes.some(([k]) => k === b)).map(([t, a, b]) =>
+    h("button", { type: "button", class: "chip pick", text: t, onclick: () => { state.x = a; state.y = b; state.agg = ""; state.view = ""; render(); } })));
+  const note = h("p", { class: "chart-sub rel-note" });
+  const controls = h("div", { class: "filters rel-controls" }, h("label", { text: "X axis" }, xSel), h("label", { text: "Y axis" }, ySel), swap, aggLabel, viewLabel, showLabel);
+
+  const card = vizCard({ title: "Compare any two measures", sub: "", draw: () => {}, table: () => h("div"), headExtra: h("div", {}, presets, controls) });
+  card.insertBefore(note, card.querySelector(".chart"));
+
+  function render() {
+    for (const k of ["x", "y"]) if (!axes.some(([a]) => a === state[k])) state[k] = k === "x" ? axes[0][0] : axes[1][0];
+    xSel.value = state.x; ySel.value = state.y; showSel.value = state.show;
+    const xc = A.isCat(state.x), yc = A.isCat(state.y), numK = xc ? state.y : state.x;
+    const aggNow = state.agg || (!xc && !yc ? "mean" : A.METRICS[numK] && A.METRICS[numK].log ? "median" : "mean");
+    const viewNow = state.view || (numK === "rating" || numK === "year" ? "diff" : "value");
+    aggSel.value = aggNow; viewSel.value = viewNow;
+    aggLabel.hidden = viewLabel.hidden = !(xc !== yc); showLabel.hidden = !(xc && yc);
+    onChange();
+    const mname = k => A.METRICS[k].phrase;
+    let spec;
+    if (!xc && !yc) {
+      if (state.x === state.y) { note.textContent = "Choose two different measures to compare."; spec = { draw: h0 => h0.replaceChildren(h("p", { class: "muted", text: "Choose two different measures to compare." })), table: () => h("div") }; }
+      else {
+        const res = A.scatter(G, state.x, state.y);
+        const lg = A.METRICS[state.x].log || A.METRICS[state.y].log;
+        note.textContent = res.n < 3 ? `Too few games have data for both ${mname(state.x)} and ${mname(state.y)}.`
+          : `${fmt(res.n)} games have data for both ${mname(state.x)} and ${mname(state.y)}. Spearman ρ = ${signed(res.spearman)} (${A.strength(res.spearman)}); Pearson r = ${signed(res.pearson)}${lg ? " on a log scale" : ""}. ` +
+            (res.n > A.MAX_POINTS ? `Dots are a random sample of ${fmt(A.MAX_POINTS)} games; the numbers and the trend line use all ${fmt(res.n)}. ` : "Each dot is a game. ") + "Hover a dot for the game; click to open it. Correlation is not cause.";
+        spec = { draw: host => (res.n < 3 ? host.replaceChildren(h("p", { class: "muted", text: "Not enough data for this pair in the current dump." })) : drawScatter(host, res, G)), table: () => scatterTable(res, G) };
+      }
+    } else if (xc !== yc) {
+      const catKey = xc ? state.x : state.y, numKey = numK, agg = aggNow;
+      const res = A.categoryBars(G, facets, catKey, numKey, agg), word = agg === "median" ? "Median" : "Mean";
+      const diff = viewNow === "diff" && res.overall != null;
+      const overallText = res.overall != null ? fmtVal(numKey, res.overall) : "";
+      const rows = res.rows.map(r => ({ ...r, diff: Math.round((r.value - (res.overall || 0)) * 10) / 10 }));
+      if (diff) rows.sort((p, q) => q.diff - p.diff);
+      note.textContent = `${word} ${mname(numKey)} by ${catKey}, over ${A.METRICS[numKey].note}. ${catKey === "genre" ? "A game can have several genres" : "A game can be on several platforms"}; ` +
+        `${catKey}s with fewer than ${A.MIN_CAT_N} such games are left out${res.omitted ? `, and ${res.omitted} more are not shown (top 20 only)` : ""}. ` +
+        (diff ? `Each bar is the difference from all games (${overallText}): blue above, red below.` : res.overall != null ? `The line marks all games: ${overallText}.` : "");
+      const unitText = `${agg} ${mname(numKey)}`;
+      spec = {
+        draw: host => (!rows.length ? host.replaceChildren(h("p", { class: "muted", text: "No category has enough games for this measure." }))
+          : diff ? drawDiffBars(host, rows, { key: numKey, unit: unitText, overallText, aria: `${unitText} by ${catKey}, difference from all games` })
+          : drawChart(host, rows, { horizontal: true, unit: unitText, reference: res.overall != null ? { value: res.overall, label: `all games ${overallText}` } : null })),
+        table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: catKey === "genre" ? "Genre" : "Platform" }), h("th", { text: "games" }), h("th", { text: unitText }), h("th", { text: "vs all games" }))),
+          h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: r.label }), h("td", { text: fmt(r.n) }), h("td", { text: fmtVal(numKey, r.value) }), h("td", { text: signedVal(r.diff, numKey) }))))),
+      };
+    } else {
+      const res = A.crossTab(G, facets, state.y, state.x, state.show), pct = state.show === "pct", same = state.x === state.y;
+      const max = Math.max(1, ...res.cells.flat().map((v, k) => (pct ? res.pct[Math.floor(k / res.cols.length)][k % res.cols.length] : v)));
+      note.textContent = same
+        ? `${pct ? "Of the games in each row's genre, the share that also have the column's genre" : "Games that have both genres"}. The diagonal is the genre's own total.`
+        : `${pct ? `Of the games on each row's ${state.y}, the share on the column's ${state.x}` : `Games that have both the row's ${state.y} and the column's ${state.x}`}. Top 12 of each shown.`;
+      spec = {
+        draw: host => drawGrid(host, {
+          rows: res.rows.map(r => r.name), cols: res.cols.map(c => c.name), rotate: true, aria: "Category grid",
+          cell: (i, j) => { const v = pct ? res.pct[i][j] : res.cells[i][j];
+            return { fill: seqVar(v, max, pct), text: pct ? Math.round(v) + "%" : compact(res.cells[i][j]), tip: [pct ? `${v.toFixed(1)}%` : fmt(res.cells[i][j]), `${res.rows[i].name} × ${res.cols[j].name}${pct ? ` · of ${fmt(res.rowTotal[i])} ${res.rows[i].name} games` : " · games"}`] }; } }),
+        table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "" }), res.cols.map(c => h("th", { text: c.name })))),
+          h("tbody", {}, res.rows.map((r, i) => h("tr", {}, h("td", { text: r.name }), res.cols.map((_, j) => h("td", { text: pct ? res.pct[i][j].toFixed(1) + "%" : fmt(res.cells[i][j]) })))))),
+        legend: true, legendMax: pct ? `${Math.round(max)}%` : compact(Math.round(max)),
+      };
+    }
+    card.update({ draw: spec.draw, table: spec.table });
+    legend.replaceChildren(...(spec.legend ? [swatches([["--seq-1", "0"], ["--seq-2", ""], ["--seq-3", ""], ["--seq-4", ""], ["--seq-5", ""], ["--seq-6", ""], ["--seq-7", spec.legendMax]]), h("p", { class: "chart-sub", text: state.show === "pct" ? "Colour scale is linear." : "Colour scale is a square root, so smaller counts stay visible." })] : []));
+  }
+  const legend = h("div", {});
+  card.append(legend);
+  render();
+  card.set = (x, y) => { state.x = x; state.y = y; state.agg = ""; render(); };
+  return card;
+}
+
+function relationshipsSection(params) {
+  const state = { x: params.get("x") || "", y: params.get("y") || "", agg: params.get("agg") || "", view: params.get("view") || "", show: params.get("show") === "pct" ? "pct" : "count",
+                  method: params.get("m") === "pearson" ? "pearson" : "spearman" };
+  const hasTtb = !!facets.has_time_to_beat;
+  if (!state.x) state.x = hasTtb ? "ttb" : "year";
+  if (!state.y) state.y = "rating";
+  const slot = h("div", { class: "rel-slot" }, h("p", { class: "muted", text: "Loading the relationship analysis…" }));
+  const section = h("section", { class: "rel-section" }, h("h2", { class: "section-title", text: "Relationships" }),
+    h("p", { class: "muted", text: "How genre, rating, time to beat, release year and popularity relate to each other." }), slot);
+  const keep = () => { const q = new URLSearchParams({ x: state.x, y: state.y }); if (state.agg) q.set("agg", state.agg); if (state.show === "pct") q.set("show", "pct"); if (state.view) q.set("view", state.view); if (state.method === "pearson") q.set("m", "pearson");
+    history.replaceState(null, "", "#/stats?" + q); };
+  const load = async () => {
+    try {
+      const G = await getColumns();
+      const keys = ["rating", ...(hasTtb ? ["ttb"] : []), "year", "votes", "platforms"];
+      let explorer;
+      const matrix = matrixCard(G, keys, state, (a, b) => { explorer.set(a, b); explorer.scrollIntoView({ behavior: "smooth", block: "center" }); });
+      explorer = explorerCard(G, state, keep);
+      slot.replaceChildren(h("div", { class: "charts rel-charts" }, matrix, explorer));
+      matrix.redraw(); explorer.redraw();
+    } catch (e) { slot.replaceChildren(h("div", { class: "error" }, h("b", { text: "Couldn't load the relationship analysis. " }), h("code", { text: e.message }))); }
+  };
+  if ("IntersectionObserver" in window) {              // the table is a few MB: fetch it once this section is near the screen
+    const io = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) { io.disconnect(); load(); } }, { rootMargin: "500px" });
+    io.observe(slot);
+  } else load();
+  return section;
+}
+
+async function statsPage(params) {
   document.title = "Stats · VideoGameData Explorer";
   const st = await api("api/stats");
   const t = st.totals;
@@ -543,7 +934,8 @@ async function statsPage() {
       tile(fmt(t.covered), "with cover art" + pctOf(t.covered, t.games)),
       t.timed ? tile(fmt(t.timed), "with time to beat" + pctOf(t.timed, t.games)) : null,
       tile(t.first_year != null ? `${t.first_year}–${t.last_year}` : "–", "release years covered")),
-    h("div", { class: "charts" }, cards));
+    h("div", { class: "charts" }, cards),
+    relationshipsSection(params || new URLSearchParams()));
   cards.forEach(c => c.redraw());
 }
 let resizeTimer;

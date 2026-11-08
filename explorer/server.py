@@ -261,6 +261,34 @@ class Store:
             out["similar"] = [self.game_card(cards[i]) for i in similar if i in cards]
         return out
 
+    def columns(self):
+        """Every named game as parallel columns: what the browser searches and analyses.
+        build_static.py writes this as games.dat; the Python explorer serves it as /api/columns."""
+        return self._cached("columns", self._columns)
+
+    def _columns(self):
+        keys = ("id", "name", "year", "rel", "rating", "votes", "cover", "genres", "platforms", "ttb", "ttbn")
+        cols = {k: [] for k in keys}
+        join, cover = self.cover_join()
+        sql = (f"SELECT g.id, g.name, {self.YEAR} AS year, "
+               f"CAST(floor({self.col('first_release_date', 'BIGINT')} / 86400.0) AS INTEGER) AS rel, "
+               f"CAST(round({self.col('total_rating')} * 100) AS INTEGER) AS rating, "
+               f"{self.col('total_rating_count', 'BIGINT')} AS votes, {cover} AS cover, "
+               f"{self.col('genres', 'BIGINT[]')} AS genres, {self.col('platforms', 'BIGINT[]')} AS platforms, "
+               f"{self.ttb10()} AS ttb, {self.reports()} AS ttbn "
+               f"FROM games g {join} {self.ttb_join()} WHERE g.name IS NOT NULL ORDER BY g.id")
+        cur = self.con.cursor()
+        cur.execute("USE igdb")
+        cur.execute(sql)
+        while True:
+            rows = cur.fetchmany(50000)
+            if not rows:
+                break
+            for row in rows:
+                for key, value in zip(keys, row):
+                    cols[key].append((list(value) if value else []) if key in ("genres", "platforms") else value)
+        return cols
+
     def facets(self):
         return self._cached("facets", self._facets)
 
@@ -390,11 +418,15 @@ class App:
             if path in ("", "/", "/index.html"):
                 if path == "" and script:      # /games  ->  /games/  (relative URLs need the slash)
                     return self.reply(start_response, 301, b"", "text/plain", [("Location", script + "/")])
-                html = self.index.read_text(encoding="utf-8").replace("__BASE__", script + "/")
+                html = (self.index.read_text(encoding="utf-8").replace("__BASE__", script + "/")
+                        .replace("<!--ANALYSIS_JS-->", '<script src="analysis.js"></script>'))
                 return self.reply(start_response, 200, html, "text/html; charset=utf-8",
                                   [("Cache-Control", "no-cache")])
             if path == "/favicon.ico":
                 return self.reply(start_response, 204, b"", "image/x-icon")
+            if path == "/analysis.js":
+                return self.reply(start_response, 200, (HERE / "static" / "analysis.js").read_bytes(),
+                                  "text/javascript; charset=utf-8", [("Cache-Control", "no-cache")])
             if not path.startswith("/api/"):
                 return self.json(start_response, {"error": "not found"}, 404)
             try:
@@ -404,6 +436,8 @@ class App:
                                                   "Try again in a minute."}, 503)
             if path == "/api/games":
                 return self.json(start_response, store.search(q))
+            if path == "/api/columns":
+                return self.json(start_response, store.columns(), cache=3600)
             if path == "/api/facets":
                 return self.json(start_response, store.facets(), cache=3600)
             if path == "/api/stats":
