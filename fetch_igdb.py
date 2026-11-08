@@ -20,7 +20,7 @@ How it works:
 Setup:
   1. Create a free Twitch account and enable two-factor authentication.
   2. At https://dev.twitch.tv/console/apps register an application
-     (category: Application Integration, redirect URL: http://localhost).
+     (category: Application Integration, redirect URL: https://localhost, client type: Confidential).
   3. Copy its Client ID and generate a Client Secret.
   4. Put them in a file called .env next to this script (see .env.example),
      or export TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET.

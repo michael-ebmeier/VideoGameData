@@ -7,7 +7,7 @@ files, plus a loader that puts it into DuckDB for SQL queries.
 
 1. Create a Twitch account (two-factor authentication must be on), then register an app at
    <https://dev.twitch.tv/console/apps> (category *Application Integration*, redirect URL
-   `http://localhost`). Copy the **Client ID** and generate a **Client Secret**.
+   `https://localhost`, which is never used; keep *Confidential*). Copy the **Client ID** and generate a **Client Secret**.
 2. Install dependencies and add your credentials:
 
    ```bash
