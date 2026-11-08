@@ -102,6 +102,18 @@ IGDB's own age-rating tables (`age_ratings`, `age_rating_organizations`, `age_ra
 rule lives in `Store._build_scope` in `explorer/server.py`. If the data has no age ratings, the switch
 doesn't appear and everything is shown.
 
+## Pivoting the Stats page
+
+A bar at the top of **Stats** slices every chart on the page, including Relationships: pick an **era**
+(presets, or any from/to years), one or more **platforms** (a searchable list, plus quick picks such as
+"2000s platforms"), and one or more **genres**. Removable chips and a summary line (`N of M games · …`)
+show what is in play; **Reset all** clears it.
+
+**How the genre mix changes** compares genre share across release eras (decades or 5-year eras) or across
+platforms ordered from oldest to newest, as a heatmap with a *Change* column (percentage points, first
+column to last) and trend lines for up to four genres. All of it is computed in the browser, so no rebuild
+is needed, and the address (`/stats?from=1990&to=2009&platform=…&genre=…&across=platform`) can be shared.
+
 ## Relationships (Stats page)
 
 The Stats page ends with a **Relationships** section. A correlation matrix shows how rating, time to

@@ -58,20 +58,25 @@
 
   // Analysis options: `scoped` limits to games with an ESRB rating; `trim` leaves out the lowest and highest 1%
   // of the heavy-tailed measures (time to beat, number of ratings). A bare boolean means just `scoped`.
-  const opt = o => (o && typeof o === "object" ? { scoped: !!o.scoped, trim: !!o.trim } : { scoped: !!o, trim: false });
+  // `mask` (from sliceMask) limits everything to a slice of the games, e.g. one era or some platforms.
+  const opt = o => (o && typeof o === "object"
+    ? { scoped: !!o.scoped, trim: !!o.trim, mask: o.mask || null, maskKey: o.mask ? String(o.maskKey || "") : "" }
+    : { scoped: !!o, trim: false, mask: null, maskKey: "" });
   const TRIM_SHARE = 0.01;
 
   /* Per-measure integer columns (NULL where a game doesn't count), built once per table and option set. */
   function prepare(G, options) {
     const o = opt(options), scoped = o.scoped && !!G.rated;
-    const key = (scoped ? "rated" : "all") + (o.trim ? "+trim" : "");
+    const key = (scoped ? "rated" : "all") + (o.trim ? "+trim" : "") + (o.mask ? "+m" + o.maskKey : "");
     G._an = G._an || {};
     if (G._an[key]) return G._an[key];
     const n = G.n, raw = {}, max = {}, trims = {};
-    const skip = scoped ? G.rated : null;                    // games outside the scope count for nothing
+    const skip = scoped ? G.rated : null, mask = o.mask;     // games outside the scope or the slice count for nothing
+    const keys = Object.keys(G._an);                         // each entry is ~7 MB at full size: keep the latest few
+    if (keys.length >= 5) delete G._an[keys[0]];
     for (const k of Object.keys(METRICS)) { raw[k] = new Int32Array(n).fill(NULL); max[k] = 0; }
     for (let i = 0; i < n; i++) {
-      if (skip && !skip[i]) continue;
+      if ((skip && !skip[i]) || (mask && !mask[i])) continue;
       const y = G.year[i];
       if (y !== NULL && y >= 1970 && y <= THIS_YEAR) raw.year[i] = y;
       if (G.rating[i] >= 0 && G.votes[i] >= MIN_RATINGS) raw.rating[i] = G.rating[i];
@@ -198,17 +203,22 @@
 
   /* Two categories: how many games have both (a genre's overlap with itself is genre co-occurrence). */
   function crossTab(G, facets, rowKey, colKey, show, options) {
-    const scoped = opt(options).scoped;
-    const list = key => (key === "genre" ? facets.genres : facets.platforms).slice().sort((p, q) => q.n - p.n || p.name.localeCompare(q.name));
-    const rows = list(rowKey).slice(0, 12), cols = list(colKey).slice(0, 12);
+    const o = opt(options), scoped = o.scoped, mask = o.mask;
+    const names = key => new Map((key === "genre" ? facets.genres : facets.platforms).map(r => [r.id, r.name]));
+    const rl = rowKey === "genre" ? G.genres : G.platforms, cl = colKey === "genre" ? G.genres : G.platforms;
+    const skip = scoped && G.rated ? G.rated : null;
+    const included = i => !((skip && !skip[i]) || (mask && !mask[i]));
+    // first pass: how many games in the slice have each category, to choose the 12 largest of each kind
+    const count = (lists, known) => { const c = new Map(); for (let i = 0; i < G.n; i++) if (included(i)) for (const id of lists[i]) if (known.has(id)) c.set(id, (c.get(id) || 0) + 1); return c; };
+    const rn = names(rowKey), cn = names(colKey), rc = count(rl, rn), cc = rowKey === colKey ? rc : count(cl, cn);
+    const top = (nm, c) => [...c].map(([id, n]) => ({ id, name: nm.get(id), n })).sort((p, q) => q.n - p.n || p.name.localeCompare(q.name)).slice(0, 12);
+    const rows = top(rn, rc), cols = top(cn, cc);
     const rowAt = new Map(rows.map((r, i) => [r.id, i])), colAt = new Map(cols.map((c, j) => [c.id, j]));
     const cells = rows.map(() => new Array(cols.length).fill(0));
     const rowN = new Array(rows.length).fill(0), colN = new Array(cols.length).fill(0);
-    const rl = rowKey === "genre" ? G.genres : G.platforms, cl = colKey === "genre" ? G.genres : G.platforms;
-    const skip = scoped && G.rated ? G.rated : null;
-    let total = 0;                                           // games in scope
+    let total = 0;                                           // games in the slice
     for (let i = 0; i < G.n; i++) {
-      if (skip && !skip[i]) continue;
+      if (!included(i)) continue;
       total++;
       for (const b of cl[i]) { const c = colAt.get(b); if (c !== undefined) colN[c]++; }
       for (const a of rl[i]) {
@@ -235,9 +245,181 @@
     return { keys, cells };
   }
 
+  /* ----- slices: eras, platforms, genres ----- */
+  const anyIn = (list, set) => { for (let k = 0; k < list.length; k++) if (set.has(list[k])) return true; return false; };
+
+  /* A mask of the games in a slice {from, to, platforms: [ids], genres: [ids]} (and in the scope), or null when
+     the slice restricts nothing. Empty lists and null years mean "no restriction". Games with an unknown release
+     year are left out as soon as a year limit is set. Anything in a list matches ("any of these platforms"). */
+  function sliceMask(G, slice, scoped) {
+    const sl = slice || {};
+    const plats = sl.platforms && sl.platforms.length ? new Set(sl.platforms) : null;
+    const gens = sl.genres && sl.genres.length ? new Set(sl.genres) : null;
+    const from = Number.isInteger(sl.from) ? sl.from : null, to = Number.isInteger(sl.to) ? sl.to : null;
+    if (!plats && !gens && from === null && to === null) return null;
+    const sc = !!(scoped && G.rated);
+    const key = [from, to, plats ? [...plats].sort((a, b) => a - b).join("+") : "", gens ? [...gens].sort((a, b) => a - b).join("+") : "", sc ? "r" : "a"].join("|");
+    G._masks = G._masks || new Map();
+    if (G._masks.has(key)) return G._masks.get(key);
+    const mask = new Uint8Array(G.n), rated = sc ? G.rated : null;
+    let count = 0;
+    for (let i = 0; i < G.n; i++) {
+      if (rated && !rated[i]) continue;
+      if (from !== null || to !== null) {
+        const y = G.year[i];
+        if (y === NULL || (from !== null && y < from) || (to !== null && y > to)) continue;
+      }
+      if (plats && !anyIn(G.platforms[i], plats)) continue;
+      if (gens && !anyIn(G.genres[i], gens)) continue;
+      mask[i] = 1; count++;
+    }
+    if (G._masks.size >= 6) G._masks.delete(G._masks.keys().next().value);
+    const res = { mask, count, key };
+    G._masks.set(key, res);
+    return res;
+  }
+
+  /* How many games are in the scope (all of them, or only those with an ESRB rating). */
+  const scopeCount = (G, scoped) => { if (!(scoped && G.rated)) return G.n; let n = 0; for (let i = 0; i < G.n; i++) if (G.rated[i]) n++; return n; };
+
+  const medianOf = a => { if (!a.length) return null; const b = Int32Array.from(a).sort(); const h = b.length >> 1; return b.length % 2 ? b[h] : (b[h - 1] + b[h]) / 2; };
+  const TTB_EDGES = [20, 50, 100, 200, 400, 800];            // tenths of an hour: 2, 5, 10, 20, 40 and 80 hours
+  const TTB_LABELS = ["Under 2 h", "2–5 h", "5–10 h", "10–20 h", "20–40 h", "40–80 h", "80+ h"];
+  const MIN_GENRE_GAMES = 30, MIN_YEAR_GAMES = 20;
+
+  /* Everything the Stats page shows, for the games in a scope and slice. */
+  function summarize(G, facets, options) {
+    const o = opt(options), rated = o.scoped && G.rated ? G.rated : null, mask = o.mask;
+    const today = Math.floor(Date.now() / 86400000);
+    const totals = { games: 0, rated: 0, covered: 0, timed: 0, first_year: null, last_year: null };
+    const perYear = new Map(), ratings = new Map(), genreN = new Map(), platN = new Map();
+    const buckets = new Array(7).fill(0), ttbGenre = new Map(), ttbYear = new Map();
+    const gnames = new Map(facets.genres.map(r => [r.id, r.name])), pnames = new Map(facets.platforms.map(r => [r.id, r.name]));
+    for (let i = 0; i < G.n; i++) {
+      if ((rated && !rated[i]) || (mask && !mask[i])) continue;
+      totals.games++;
+      if (G.rating[i] >= 0) totals.rated++;
+      if (G.cover[i]) totals.covered++;
+      const y = G.year[i];
+      if (y !== NULL) {
+        if (G.rel[i] !== NULL && G.rel[i] <= today) {
+          if (totals.first_year === null || y < totals.first_year) totals.first_year = y;
+          if (totals.last_year === null || y > totals.last_year) totals.last_year = y;
+        }
+        if (y >= 1970 && y <= THIS_YEAR) perYear.set(y, (perYear.get(y) || 0) + 1);
+      }
+      if (G.rating[i] >= 0 && G.votes[i] >= MIN_RATINGS) {
+        const b = Math.min(Math.floor(G.rating[i] / 1000), 9) * 10;
+        ratings.set(b, (ratings.get(b) || 0) + 1);
+      }
+      for (const id of G.genres[i]) if (gnames.has(id)) genreN.set(id, (genreN.get(id) || 0) + 1);
+      for (const id of G.platforms[i]) if (pnames.has(id)) platN.set(id, (platN.get(id) || 0) + 1);
+      if (G.ttb[i] >= 0 && G.ttbn[i] >= MIN_REPORTS) {
+        const t = G.ttb[i];
+        totals.timed++;
+        let b = 0; while (b < TTB_EDGES.length && t >= TTB_EDGES[b]) b++;
+        buckets[b]++;
+        for (const id of G.genres[i]) if (gnames.has(id)) { if (!ttbGenre.has(id)) ttbGenre.set(id, []); ttbGenre.get(id).push(t); }
+        if (y !== NULL && y >= 1985 && y <= THIS_YEAR) { if (!ttbYear.has(y)) ttbYear.set(y, []); ttbYear.get(y).push(t); }
+      }
+    }
+    const round1 = v => Math.round(v * 10) / 10;
+    const topN = (m, names) => [...m].map(([id, n]) => ({ label: names.get(id), value: n, id })).sort((p, q) => q.value - p.value || p.id - q.id).slice(0, 15);
+    return {
+      totals,
+      per_year: [...perYear].sort((p, q) => p[0] - q[0]).map(([label, value]) => ({ label, value })),
+      ratings: [...ratings].sort((p, q) => p[0] - q[0]).map(([label, value]) => ({ label, value })),
+      top_genres: topN(genreN, gnames), top_platforms: topN(platN, pnames),
+      ttb_buckets: totals.timed ? TTB_LABELS.map((label, i) => ({ label, value: buckets[i] })) : [],
+      ttb_by_genre: [...ttbGenre].filter(([, a]) => a.length >= MIN_GENRE_GAMES)
+        .map(([id, a]) => ({ label: gnames.get(id), value: round1(medianOf(a) / 10), n: a.length }))
+        .sort((p, q) => q.value - p.value || p.label.localeCompare(q.label)).slice(0, 15),
+      ttb_by_year: [...ttbYear].filter(([, a]) => a.length >= MIN_YEAR_GAMES).sort((p, q) => p[0] - q[0])
+        .map(([label, a]) => ({ label, value: round1(medianOf(a) / 10), n: a.length })),
+    };
+  }
+
+  /* Each platform's game count and the median release year of its games, within a scope and slice.
+     The median year is a rough "age" of the platform, used to put platforms in order from old to new. */
+  function platformAges(G, facets, options) {
+    const o = opt(options), rated = o.scoped && G.rated ? G.rated : null, mask = o.mask;
+    const names = new Map(facets.platforms.map(r => [r.id, r.name])), years = new Map(), count = new Map();
+    for (let i = 0; i < G.n; i++) {
+      if ((rated && !rated[i]) || (mask && !mask[i])) continue;
+      const y = G.year[i];
+      for (const id of G.platforms[i]) {
+        if (!names.has(id)) continue;
+        count.set(id, (count.get(id) || 0) + 1);
+        if (y !== NULL && y >= 1970 && y <= THIS_YEAR) { if (!years.has(id)) years.set(id, []); years.get(id).push(y); }
+      }
+    }
+    return [...count].map(([id, n]) => ({ id, name: names.get(id), n, median: years.has(id) ? medianOf(years.get(id)) : null }));
+  }
+
+  /*
+   * How the genre mix changes: the share of games in each genre, column by column, where the columns are eras
+   * (release-year bins) or platforms (oldest first). cfg: {across: "era" | "platform", bin: years per era,
+   * platformIds: which platforms (default: the 12 largest), order: "age" | "size", minGames: smallest column
+   * that gets numbers, options: scope/slice}. `change` is the last column's share minus the first's, in
+   * percentage points, using the first and last columns that are big enough.
+   */
+  function compareShares(G, facets, cfg) {
+    const o = opt(cfg.options), rated = o.scoped && G.rated ? G.rated : null, mask = o.mask;
+    const minGames = cfg.minGames || 30, genres = facets.genres, gIndex = new Map(genres.map((g, i) => [g.id, i]));
+    const included = i => !((rated && !rated[i]) || (mask && !mask[i]));
+    let cols = [], colOf;                                    // colOf(i) -> list of column indexes the game belongs to
+    if (cfg.across === "platform") {
+      const ages = platformAges(G, facets, options0(o));
+      const byId = new Map(ages.map(a => [a.id, a]));
+      let ids = (cfg.platformIds || []).filter(id => byId.has(id));
+      if (!ids.length) ids = ages.slice().sort((p, q) => q.n - p.n || p.name.localeCompare(q.name)).slice(0, 12).map(a => a.id);
+      const picked = ids.map(id => byId.get(id));
+      picked.sort(cfg.order === "size" ? (p, q) => q.n - p.n || p.name.localeCompare(q.name)
+        : (p, q) => (p.median ?? 1e9) - (q.median ?? 1e9) || q.n - p.n || p.name.localeCompare(q.name));
+      cols = picked.map(a => ({ key: a.id, label: a.name, age: a.median, n: 0, counts: new Int32Array(genres.length) }));
+      const at = new Map(cols.map((c, j) => [c.key, j]));
+      colOf = i => { const r = []; for (const id of G.platforms[i]) { const j = at.get(id); if (j !== undefined) r.push(j); } return r; };
+    } else {
+      const bin = cfg.bin === 5 ? 5 : 10;
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < G.n; i++) if (included(i)) { const y = G.year[i]; if (y !== NULL && y >= 1970 && y <= THIS_YEAR) { if (y < lo) lo = y; if (y > hi) hi = y; } }
+      if (lo <= hi) for (let s0 = Math.floor(lo / bin) * bin; s0 <= hi; s0 += bin)
+        cols.push({ key: s0, label: bin === 10 ? `${s0}s` : `${s0}–${String(s0 + bin - 1).slice(2)}`, from: s0, to: s0 + bin - 1, n: 0, counts: new Int32Array(genres.length) });
+      const start = cols.length ? cols[0].from : 0;
+      colOf = i => { const y = G.year[i]; if (y === NULL || y < 1970 || y > THIS_YEAR) return []; const j = Math.floor((y - start) / bin); return j >= 0 && j < cols.length ? [j] : []; };
+    }
+    const overall = new Int32Array(genres.length);
+    let nAll = 0;
+    for (let i = 0; i < G.n; i++) {
+      if (!included(i)) continue;
+      const cs = colOf(i);
+      if (!cs.length) continue;
+      nAll++;
+      for (const id of G.genres[i]) { const k = gIndex.get(id); if (k !== undefined) overall[k]++; }
+      for (const j of cs) {
+        cols[j].n++;
+        for (const id of G.genres[i]) { const k = gIndex.get(id); if (k !== undefined) cols[j].counts[k]++; }
+      }
+    }
+    const valid = cols.map((c, j) => (c.n >= minGames ? j : -1)).filter(j => j >= 0);
+    const first = valid.length > 1 ? valid[0] : -1, last = valid.length > 1 ? valid[valid.length - 1] : -1;
+    let rows = genres.map((g, k) => {
+      const shares = cols.map(c => (c.n >= minGames ? (100 * c.counts[k]) / c.n : null));
+      return { id: g.id, name: g.name, overall: nAll ? (100 * overall[k]) / nAll : 0, shares, counts: cols.map(c => c.counts[k]),
+               change: first >= 0 ? shares[last] - shares[first] : null };
+    }).filter(r => overall[gIndex.get(r.id)] > 0);
+    const by = cfg.sort || "share";
+    rows.sort(by === "rise" ? (p, q) => (q.change ?? -1e9) - (p.change ?? -1e9) || q.overall - p.overall || p.name.localeCompare(q.name)
+      : by === "fall" ? (p, q) => (p.change ?? 1e9) - (q.change ?? 1e9) || q.overall - p.overall || p.name.localeCompare(q.name)
+      : (p, q) => q.overall - p.overall || p.name.localeCompare(q.name));
+    return { across: cfg.across === "platform" ? "platform" : "era", cols, rows, nAll, minGames, first, last, valid };
+  }
+  // the scope-and-slice options again, without any trim (the trim only concerns the relationship analysis)
+  const options0 = o => ({ scoped: o.scoped, mask: o.mask, maskKey: o.maskKey });
+
   /* What the trim left out: {measure: {lo, hi, dropped, n}} with lo/hi in the measure's own units. */
   const trimInfo = (G, options) => prepare(G, options).trims;
 
-  window.IGDB_ANALYSIS = { trimInfo, buildColumns, METRICS, CATEGORIES, isCat, MIN_CAT_N, MIN_RATINGS, MIN_REPORTS, MAX_POINTS,
+  window.IGDB_ANALYSIS = { sliceMask, scopeCount, summarize, platformAges, compareShares, trimInfo, buildColumns, METRICS, CATEGORIES, isCat, MIN_CAT_N, MIN_RATINGS, MIN_REPORTS, MAX_POINTS,
                            strength, scatter, categoryBars, crossTab, correlationMatrix, averageRanks, pearson };
 })();

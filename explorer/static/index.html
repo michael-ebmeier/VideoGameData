@@ -36,6 +36,8 @@
     /* diverging pair for correlations: red (negative) <-> neutral <-> blue (positive), four equal steps per arm */
     --div-neg-4: #e66767; --div-neg-3: #b85d5a; --div-neg-2: #8c524e; --div-neg-1: #624541; --div-0: #383835;
     --div-pos-1: #3c4c5e; --div-pos-2: #3e6089; --div-pos-3: #3d73b6; --div-pos-4: #3987e5;
+    /* up to four categorical line colours (dark steps) */
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
@@ -51,6 +53,7 @@
       --seq-1: #f7f0b8; --seq-2: #b3dcab; --seq-3: #73c2a6; --seq-4: #2fa3a6; --seq-5: #2a7aae; --seq-6: #2a539f; --seq-7: #27307f;
       --div-neg-4: #e34948; --div-neg-3: #ec7971; --div-neg-2: #f1a299; --div-neg-1: #f3c9c2; --div-0: #f0efec;
       --div-pos-1: #c0d2e9; --div-pos-2: #90b5e4; --div-pos-3: #6097de; --div-pos-4: #2a78d6;
+      --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
     }
   }
   * { box-sizing: border-box; }
@@ -239,6 +242,35 @@
   .legend { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 2px; font-size: 11px; color: var(--muted); }
   .legend .lg { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 46px; }
   .legend i { display: block; width: 100%; height: 10px; border-radius: 2px; }
+  /* pivot bar */
+  .pivot { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; margin: 10px 0 18px; }
+  .pv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0; }
+  .pv-label { width: 72px; color: var(--muted); font-size: 13px; }
+  .pv-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .pv-years { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .pv-years input { width: 76px; padding: 3px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .pv-foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; font-size: 13px; color: var(--text-2); }
+  .chip.on { border-color: var(--accent); color: var(--text); background: var(--surface-2); }
+  .chip .x { background: none; border: none; cursor: pointer; padding: 0 0 0 6px; color: var(--muted); }
+  .chip .x:hover { color: var(--text); }
+  .pop-wrap { position: relative; }
+  .pop { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: min(340px, calc(100vw - 32px)); background: var(--surface-2); border: 1px solid var(--line);
+         border-radius: var(--radius); padding: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  .pop > input[type=search] { width: 100%; padding: 6px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .pop-sorts, .pop-groups, .pop-foot { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .pop-sorts .on { color: var(--text); text-decoration: none; font-weight: 600; }
+  .pop-list { max-height: 260px; overflow: auto; margin-top: 8px; }
+  .pop-item { display: flex; gap: 8px; align-items: center; padding: 3px 2px; cursor: pointer; font-size: 14px; }
+  .pop-item .n { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .pop-item input { accent-color: var(--accent); }
+  .tip-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .tip-row i { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .tip-row b { display: inline; margin-left: auto; padding-left: 12px; font-size: 13px; }
+  .chart .trend-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .trend-pt { stroke: var(--surface); stroke-width: 2; }
+  .legend.chart-legend { flex-direction: row; gap: 14px; }
+  .legend .lg.inline { flex-direction: row; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-2); }
+  .legend .lg.inline i.line { width: 16px; height: 3px; }
   .tip {
     position: fixed; z-index: 50; pointer-events: none; background: var(--surface-2); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 10px; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.3); display: none;
@@ -684,7 +716,7 @@ const PRESETS = [
   ["Genre mix by platform", "genre", "platform"], ["Which genres go together?", "genre", "genre"],
 ];
 const MIN_PAIR_N = 30;
-const aopts = state => ({ scoped: scoped(), trim: state.trim });        // scope + trim, as the analysis wants them
+const aopts = state => ({ scoped: scoped(), trim: state.trim, mask: sliceCtx.mask, maskKey: sliceCtx.key });        // scope + trim, as the analysis wants them
 /* "Time to beat shown from 0.5 h to 180 h; the lowest and highest 1% (412 games) are left out." for the measures involved */
 function trimNote(G, state, keys) {
   if (!state.trim) return "";
@@ -811,8 +843,8 @@ function drawGrid(host, g) {
   const W = Math.max(96 + 44 * nC + 8, host.clientWidth), rowW = Math.min(180, Math.max(96, W * 0.24));   // never narrower than 44px a column: scroll instead
   const noteW = g.rowNotes && host.clientWidth >= 680 ? 104 : 0;
   const cellW = Math.max(44, Math.min(110, (W - rowW - noteW - 8) / nC)), cellH = Math.max(28, Math.min(44, cellW * 0.6));
-  const topH = g.rotate ? 104 : 28, footGap = g.footer ? 10 : 0, footH = g.footer ? Math.round(cellH * 0.86) : 0;
-  const VW = rowW + cellW * nC + noteW + 8, VH = topH + cellH * nR + footGap + footH + 6;
+  const topH = g.rotate ? 104 : 28, feet = g.footers || (g.footer ? [g.footer] : []), footGap = feet.length ? 10 : 0, footH = Math.round(cellH * 0.86);
+  const VW = rowW + cellW * nC + noteW + 8, VH = topH + cellH * nR + footGap + footH * feet.length + 6;
   const svg = s("svg", { viewBox: `0 0 ${VW} ${VH}`, height: Math.min(VH, 640), role: "img", "aria-label": g.aria || "grid", style: `min-width:${VW}px` });
   const clip = (t, n) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
   if (g.corner) svg.append(s("text", { class: "axis-title", x: rowW - 8, y: topH - 8, "text-anchor": "end", text: g.corner }));
@@ -840,13 +872,13 @@ function drawGrid(host, g) {
     if (noteW && g.rowNotes[i]) svg.append(s("text", { x: rowW + cellW * nC + 10, y: topH + i * cellH + cellH / 2 + 4, text: g.rowNotes[i] }));
     g.cols.forEach((_, j) => { const c = g.cell(i, j); if (c) drawCell(c, rowW + j * cellW, topH + i * cellH, cellH); });
   });
-  if (g.footer) {                                            // the baseline everything is compared with
-    const fy = topH + cellH * nR + footGap;
-    svg.append(s("line", { class: "grid-line", x1: rowW, x2: rowW + cellW * nC, y1: fy - footGap / 2, y2: fy - footGap / 2 }));
-    svg.append(s("text", { class: "strong", x: rowW - 8, y: fy + footH / 2 + 4, "text-anchor": "end", text: g.footer.label }));
-    if (noteW && g.footer.note) svg.append(s("text", { x: rowW + cellW * nC + 10, y: fy + footH / 2 + 4, text: g.footer.note }));
-    g.cols.forEach((_, j) => { const c = g.footer.cell(j); if (c) drawCell(c, rowW + j * cellW, fy, footH); });
-  }
+  feet.forEach((f, k) => {                                   // the baseline(s) everything is compared with
+    const fy = topH + cellH * nR + footGap + k * footH;
+    if (k === 0) svg.append(s("line", { class: "grid-line", x1: rowW, x2: rowW + cellW * nC, y1: fy - footGap / 2, y2: fy - footGap / 2 }));
+    svg.append(s("text", { class: "strong", x: rowW - 8, y: fy + footH / 2 + 4, "text-anchor": "end", text: f.label }));
+    if (noteW && f.note) svg.append(s("text", { x: rowW + cellW * nC + 10, y: fy + footH / 2 + 4, text: f.note }));
+    g.cols.forEach((_, j) => { const c = f.cell(j); if (c) drawCell(c, rowW + j * cellW, fy, footH); });
+  });
   host.replaceChildren(svg);
 }
 const swatches = (items) => h("div", { class: "legend" }, items.map(([v, label]) => h("span", { class: "lg" }, h("i", { style: `background:var(${v})` }), label)));
@@ -1048,21 +1080,312 @@ function explorerCard(G, state, onChange) {
   return card;
 }
 
-function relationshipsSection(params) {
-  const state = { x: params.get("x") || "", y: params.get("y") || "", agg: params.get("agg") || "", view: params.get("view") || "", trim: params.get("trim") !== "0", show: params.get("show") === "count" ? "count" : "pct",
-                  method: params.get("m") === "pearson" ? "pearson" : "spearman" };
+/* ---------- the slice: era, platforms and genres that every Stats chart follows ---------- */
+const sliceCtx = { mask: null, key: "" };           // the games in the current slice, set each time the page recomputes
+const ERA_PRESETS = [["All years", null, null], ["Before 1990", null, 1989], ["1990s", 1990, 1999], ["2000s", 2000, 2009], ["2010s", 2010, 2019], ["2020s", 2020, null]];
+const csvIds = s => (s || "").split(",").map(x => parseInt(x, 10)).filter(Number.isInteger);
+const statsState = { slice: { from: null, to: null, platforms: [], genres: [] },
+                     cmp: { across: "era", bin: 10, order: "age", sort: "share", show: "pct", lines: [] }, rel: null };
+const sliceActive = () => { const s = statsState.slice; return s.from !== null || s.to !== null || s.platforms.length > 0 || s.genres.length > 0; };
+
+function relState(params) {
+  const st = { x: params.get("x") || "", y: params.get("y") || "", agg: params.get("agg") || "", view: params.get("view") || "", trim: params.get("trim") !== "0",
+               show: params.get("show") === "count" ? "count" : "pct", method: params.get("m") === "pearson" ? "pearson" : "spearman" };
+  if (!st.x) st.x = facets.has_time_to_beat ? "ttb" : "year";
+  if (!st.y) st.y = "rating";
+  return st;
+}
+function readStatsState(params) {
+  const yr = v => { const n = parseInt(v, 10); return Number.isInteger(n) && n >= 1970 && n <= 2100 ? n : null; };
+  statsState.slice = { from: yr(params.get("from")), to: yr(params.get("to")), platforms: csvIds(params.get("platform")), genres: csvIds(params.get("genre")) };
+  statsState.cmp = { across: params.get("across") === "platform" ? "platform" : "era", bin: params.get("bin") === "5" ? 5 : 10, order: params.get("order") === "size" ? "size" : "age",
+                     sort: ["rise", "fall"].includes(params.get("sort")) ? params.get("sort") : "share", show: params.get("cshow") === "count" ? "count" : "pct", lines: csvIds(params.get("lines")).slice(0, 4) };
+  statsState.rel = relState(params);
+}
+/* the address always describes what's on screen, so a view can be shared or bookmarked */
+function writeStatsUrl() {
+  const q = new URLSearchParams(), sl = statsState.slice, c = statsState.cmp, r = statsState.rel;
+  if (sl.from !== null) q.set("from", sl.from);
+  if (sl.to !== null) q.set("to", sl.to);
+  if (sl.platforms.length) q.set("platform", sl.platforms.join(","));
+  if (sl.genres.length) q.set("genre", sl.genres.join(","));
+  if (c.across === "platform") q.set("across", "platform");
+  if (c.bin === 5) q.set("bin", "5");
+  if (c.order === "size") q.set("order", "size");
+  if (c.sort !== "share") q.set("sort", c.sort);
+  if (c.show === "count") q.set("cshow", "count");
+  if (c.lines.length) q.set("lines", c.lines.join(","));
+  q.set("x", r.x); q.set("y", r.y);
+  if (r.agg) q.set("agg", r.agg);
+  if (r.show === "count") q.set("show", "count");
+  if (r.view) q.set("view", r.view);
+  if (!r.trim) q.set("trim", "0");
+  if (r.method === "pearson") q.set("m", "pearson");
+  history.replaceState(null, "", appUrl("/stats", q));
+}
+
+/* a button that opens a searchable checklist (platforms, genres); `setSelected` is called with the new list of ids */
+let openPop = null;
+document.addEventListener("pointerdown", e => { if (openPop && !openPop.wrap.contains(e.target)) openPop.close(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && openPop) { const b = openPop.btn; openPop.close(); b.focus(); } });
+function picker({ title, items, getSelected, setSelected, sorts, groups }) {
+  const wrap = h("div", { class: "pop-wrap" });
+  const btn = h("button", { type: "button", class: "chip pick", "aria-haspopup": "true", "aria-expanded": "false" });
+  const search = h("input", { type: "search", placeholder: `Search ${title.toLowerCase()}…`, "aria-label": `Search ${title.toLowerCase()}` });
+  const list = h("div", { class: "pop-list", role: "group", "aria-label": title });
+  const panel = h("div", { class: "pop", hidden: true });
+  let sortKey = sorts ? sorts[0][0] : "name";
+  const sorters = { name: (a, b) => a.name.localeCompare(b.name), games: (a, b) => b.n - a.n || a.name.localeCompare(b.name),
+                    age: (a, b) => (a.median ?? 1e9) - (b.median ?? 1e9) || b.n - a.n || a.name.localeCompare(b.name) };
+  const label = () => { const n = getSelected().length; btn.textContent = `${title}: ${n ? `${n} selected` : "all"} ▾`; };
+  const render = () => {
+    const sel = new Set(getSelected()), q = search.value.trim().toLowerCase();
+    const rows = items.filter(it => !q || it.name.toLowerCase().includes(q)).sort(sorters[sortKey]);
+    list.replaceChildren(...(rows.length ? rows.map(it => h("label", { class: "pop-item" },
+      h("input", { type: "checkbox", checked: sel.has(it.id), onchange: e => { const s = new Set(getSelected()); if (e.target.checked) s.add(it.id); else s.delete(it.id); setSelected([...s]); label(); } }),
+      h("span", { text: it.name }), h("span", { class: "n", text: it.note }))) : [h("p", { class: "muted", text: "Nothing matches." })]));
+  };
+  panel.append(search,
+    sorts && h("div", { class: "pop-sorts" }, "Sort: ", sorts.map(([k, t]) => h("button", { type: "button", class: "linklike" + (sortKey === k ? " on" : ""), text: t, onclick: e => { sortKey = k; panel.querySelectorAll(".pop-sorts button").forEach(b => b.classList.toggle("on", b === e.target)); render(); } }))),
+    groups && groups.length ? h("div", { class: "pop-groups" }, groups.map(g => h("button", { type: "button", class: "chip pick", text: g.label, title: g.title, onclick: () => { setSelected(g.ids.slice()); label(); render(); } }))) : null,
+    list, h("div", { class: "pop-foot" }, h("button", { type: "button", class: "linklike", text: "Clear selection", onclick: () => { setSelected([]); label(); render(); } })));
+  search.addEventListener("input", render);
+  const pop = { wrap, btn, close() { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); if (openPop === pop) openPop = null; } };
+  btn.addEventListener("click", () => {
+    if (!panel.hidden) return pop.close();
+    if (openPop) openPop.close();
+    panel.hidden = false; btn.setAttribute("aria-expanded", "true"); openPop = pop; render(); search.focus();
+  });
+  wrap.append(btn, panel);
+  label();
+  return { el: wrap, refresh() { label(); if (!panel.hidden) render(); } };
+}
+
+/* the bar of pivot controls above the Stats charts */
+function pivotBar(G, onChange) {
+  const A = IGDB_ANALYSIS, sl = statsState.slice;
+  const ages = A.platformAges(G, facets, { scoped: scoped() });
+  const ageOf = new Map(ages.map(a => [a.id, a]));
+  const platItems = facets.platforms.map(p => { const a = ageOf.get(p.id) || {}; return { id: p.id, name: p.name, n: a.n || 0, median: a.median ?? null, note: `${a.median ?? "?"} · ${fmt(a.n || 0)}` }; });
+  const genItems = facets.genres.map(g => ({ id: g.id, name: g.name, n: g.n, note: fmt(g.n) }));
+  const decades = new Map();                       // quick picks: platforms grouped by when most of their games came out
+  for (const a of ages) if (a.n >= 50 && a.median != null) { const d = Math.floor(a.median / 10) * 10; if (!decades.has(d)) decades.set(d, []); decades.get(d).push(a.id); }
+  const groups = [...decades].filter(([, ids]) => ids.length >= 2).sort((a, b) => a[0] - b[0])
+    .map(([d, ids]) => ({ label: `${d}s platforms`, ids, title: `Platforms whose games mostly date from the ${d}s` }));
+  const change = (key, value) => { sl[key] = value; writeStatsUrl(); onChange(); };
+
+  const eraChips = h("div", { class: "pv-chips" }, ERA_PRESETS.map(([t, from, to]) =>
+    h("button", { type: "button", class: "chip pick", "data-from": from ?? "", "data-to": to ?? "", text: t, onclick: () => { sl.from = from; sl.to = to; writeStatsUrl(); update(); onChange(); } })));
+  const yearBox = key => h("input", { type: "number", min: 1970, max: 2100, placeholder: key === "from" ? "from" : "to", "aria-label": key === "from" ? "From year" : "To year",
+    onchange: e => { let v = parseInt(e.target.value, 10); v = Number.isInteger(v) ? Math.min(2100, Math.max(1970, v)) : null; sl[key] = v;
+      if (sl.from !== null && sl.to !== null && sl.from > sl.to) [sl.from, sl.to] = [sl.to, sl.from]; writeStatsUrl(); update(); onChange(); } });
+  const fromBox = yearBox("from"), toBox = yearBox("to");
+  const platPicker = picker({ title: "Platforms", items: platItems, getSelected: () => sl.platforms, setSelected: ids => change("platforms", ids),
+    sorts: [["games", "Most games"], ["age", "Oldest first"], ["name", "A–Z"]], groups });
+  const genPicker = picker({ title: "Genres", items: genItems, getSelected: () => sl.genres, setSelected: ids => change("genres", ids), sorts: [["games", "Most games"], ["name", "A–Z"]] });
+  const platChips = h("div", { class: "pv-chips" }), genChips = h("div", { class: "pv-chips" });
+  const chipsFor = (box, ids, names, key) => box.replaceChildren(...ids.slice(0, 6).map(id => h("span", { class: "chip on" }, names.get(id) || `#${id}`,
+    h("button", { type: "button", class: "x", "aria-label": `Remove ${names.get(id) || id}`, text: "×", onclick: () => change(key, ids.filter(x => x !== id)) }))),
+    ...(ids.length > 6 ? [h("span", { class: "muted", text: `+${ids.length - 6} more` })] : []));
+  const platNames = new Map(facets.platforms.map(p => [p.id, p.name])), genNames = new Map(facets.genres.map(g => [g.id, g.name]));
+  const summary = h("span", { class: "pv-summary" });
+  const reset = h("button", { type: "button", class: "linklike", text: "Reset all", onclick: () => { sl.from = sl.to = null; sl.platforms = []; sl.genres = []; writeStatsUrl(); update(); onChange(); } });
+  const el = h("div", { class: "pivot", role: "group", "aria-label": "Pivot the stats by era, platform and genre" },
+    h("div", { class: "pv-row" }, h("span", { class: "pv-label", text: "Era" }), eraChips, h("span", { class: "pv-years" }, fromBox, " – ", toBox)),
+    h("div", { class: "pv-row" }, h("span", { class: "pv-label", text: "Platforms" }), platPicker.el, platChips),
+    h("div", { class: "pv-row" }, h("span", { class: "pv-label", text: "Genres" }), genPicker.el, genChips),
+    h("div", { class: "pv-foot" }, summary, reset));
+  let lastCount = null;
+  function update(count) {
+    if (count !== undefined) lastCount = count;
+    eraChips.querySelectorAll("button").forEach(b => b.classList.toggle("on", (b.dataset.from === "" ? null : +b.dataset.from) === sl.from && (b.dataset.to === "" ? null : +b.dataset.to) === sl.to));
+    fromBox.value = sl.from ?? ""; toBox.value = sl.to ?? "";
+    chipsFor(platChips, sl.platforms, platNames, "platforms"); chipsFor(genChips, sl.genres, genNames, "genres");
+    platPicker.refresh(); genPicker.refresh();
+    const parts = [];
+    if (sl.from !== null || sl.to !== null) parts.push(sl.from !== null && sl.to !== null ? `released ${sl.from}–${sl.to}` : sl.from !== null ? `released ${sl.from} or later` : `released ${sl.to} or earlier`);
+    if (sl.platforms.length) parts.push("on " + sl.platforms.slice(0, 3).map(id => platNames.get(id) || id).join(", ") + (sl.platforms.length > 3 ? ` and ${sl.platforms.length - 3} more` : ""));
+    if (sl.genres.length) parts.push("in " + sl.genres.slice(0, 3).map(id => genNames.get(id) || id).join(", ") + (sl.genres.length > 3 ? ` and ${sl.genres.length - 3} more` : ""));
+    summary.textContent = lastCount === null ? "" : `${fmt(lastCount)} of ${fmt(A.scopeCount(G, scoped()))} games` + (parts.length ? ` · ${parts.join(" · ")}` : " · everything");
+    reset.hidden = !sliceActive();
+  }
+  update();
+  return { el, update };
+}
+
+/* ---------- how the genre mix changes: genres across eras or platforms ---------- */
+const chgVar = d => { const a = Math.abs(d), step = a < 1 ? 0 : a < 3 ? 1 : a < 6 ? 2 : a < 10 ? 3 : 4; return step === 0 ? "--div-0" : `--div-${d > 0 ? "pos" : "neg"}-${step}`; };
+const pts = d => (d > 0 ? "+" : d < 0 ? MINUS : "") + Math.abs(d).toFixed(1);
+const trendSlots = new Map();                       // genre id -> line colour slot (1-4), so a genre keeps its colour while others come and go
+function slotFor(id) { if (!trendSlots.has(id)) { const used = new Set(trendSlots.values()); for (let k = 1; k <= 4; k++) if (!used.has(k)) { trendSlots.set(id, k); break; } } return trendSlots.get(id); }
+
+function showMultiTip(e, title, rows) {
+  tip.replaceChildren(h("b", { text: title }), ...rows.map(r => h("div", { class: "tip-row" }, h("i", { style: `background:var(${r.color})` }), h("span", { text: r.name }), h("b", { text: r.value }))));
+  tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.max(8, Math.min(e.clientX + 14, innerWidth - r.width - 8)) + "px";
+  tip.style.top = Math.max(8, e.clientY - r.height - 12) + "px";
+}
+
+/* a few lines over the same columns, with a legend, end labels and a hover readout */
+function drawLines(host, c) {
+  const W = Math.max(320, host.clientWidth), n = c.labels.length;
+  const rotate = n > 7 || c.labels.some(l => l.length > 7) || W / n < 70;
+  const m = { l: 46, r: Math.min(150, Math.round(W * 0.2)), t: 16, b: rotate ? 88 : 36 }, H = 340, iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const maxV = Math.max(1, ...c.series.flatMap(s => s.values.filter(v => v != null)));
+  const step = niceStep(maxV / 4), top = Math.ceil(maxV / step) * step;
+  const X = j => m.l + (n === 1 ? iw / 2 : (j / (n - 1)) * iw), Y = v => m.t + ih - (v / top) * ih;
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": c.aria });
+  for (let v = 0; v <= top + 1e-9; v += step) {
+    svg.append(s("line", { class: "grid-line", x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v) }));
+    svg.append(s("text", { x: m.l - 8, y: Y(v) + 4, "text-anchor": "end", text: `${Math.round(v * 10) / 10}%` }));
+  }
+  const every = Math.ceil(46 / Math.max(1, iw / Math.max(1, n - 1)));
+  c.labels.forEach((l, j) => {
+    if (j % every && j !== n - 1) return;
+    const x = X(j), y = m.t + ih + 16;
+    svg.append(rotate ? s("text", { x, y, transform: `rotate(-38 ${x} ${y})`, "text-anchor": "end", text: l.length > 22 ? l.slice(0, 21) + "…" : l })
+                      : s("text", { x, y: y + 2, "text-anchor": "middle", text: l }));
+  });
+  const cross = s("line", { class: "grid-line", x1: 0, x2: 0, y1: m.t, y2: m.t + ih, style: "display:none;stroke:var(--text-2)" });
+  svg.append(cross);
+  const ends = [];
+  for (const sr of c.series) {
+    let d = "";
+    sr.values.forEach((v, j) => { if (v == null) return; d += (sr.values[j - 1] == null || j === 0 ? "M" : "L") + `${X(j)},${Y(v)}`; });
+    svg.append(s("path", { class: "trend-line", d, style: `stroke:var(${sr.color})` }));
+    sr.values.forEach((v, j) => { if (v != null) svg.append(s("circle", { class: "trend-pt", cx: X(j), cy: Y(v), r: 4, style: `fill:var(${sr.color})` })); });
+    const last = sr.values.map((v, j) => (v == null ? -1 : j)).filter(j => j >= 0).pop();
+    if (last !== undefined) ends.push({ sr, x: X(last), y: Y(sr.values[last]), v: sr.values[last] });
+  }
+  ends.sort((a, b) => a.y - b.y);                     // spread the end labels apart so they never overlap
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 15) ends[i].y = ends[i - 1].y + 15;
+  for (const e of ends) svg.append(s("text", { class: "strong", x: e.x + 10, y: e.y + 4, text: `${e.sr.name.length > 16 ? e.sr.name.slice(0, 15) + "…" : e.sr.name} ${fmtPct(e.v)}` }));
+  const band = n > 1 ? iw / (n - 1) : iw;
+  c.labels.forEach((l, j) => {
+    const hit = s("rect", { class: "hit", x: X(j) - band / 2, y: m.t, width: band, height: ih, tabindex: 0, "aria-label": `${l}: ${c.series.map(sr => `${sr.name} ${sr.values[j] == null ? "no data" : fmtPct(sr.values[j])}`).join(", ")}` });
+    const show = e => { cross.setAttribute("x1", X(j)); cross.setAttribute("x2", X(j)); cross.style.display = ""; showMultiTip(e, l, c.series.map(sr => ({ name: sr.name, color: sr.color, value: sr.values[j] == null ? "–" : fmtPct(sr.values[j]) }))); };
+    hit.addEventListener("pointermove", show);
+    hit.addEventListener("focus", () => { const r = hit.getBoundingClientRect(); show({ clientX: r.left + r.width / 2, clientY: r.top + 40 }); });
+    const off = () => { cross.style.display = "none"; hideTip(); };
+    hit.addEventListener("pointerleave", off); hit.addEventListener("blur", off);
+    svg.append(hit);
+  });
+  host.replaceChildren(svg);
+}
+
+function compareSection(G, opts) {
+  const A = IGDB_ANALYSIS, c = statsState.cmp, sl = statsState.slice;
+  const mkSel = (key, options, onSet) => { const el = h("select", { onchange: e => { const v = e.target.value; c[key] = key === "bin" ? +v : v; writeStatsUrl(); rebuild(); } },
+    options.map(([v, t]) => h("option", { value: v, text: t }))); el.value = String(c[key]); return el; };
+  const seg = [["era", "Across eras"], ["platform", "Across platforms"]].map(([k, t]) => h("button", { type: "button", class: "seg" + (c.across === k ? " on" : ""), text: t, onclick: () => { c.across = k; writeStatsUrl(); rebuild(); } }));
+  const binSel = mkSel("bin", [[10, "Decades"], [5, "5-year eras"]]), orderSel = mkSel("order", [["age", "Oldest to newest"], ["size", "Largest first"]]);
+  const sortSel = mkSel("sort", [["share", "Biggest share"], ["rise", "Biggest rise"], ["fall", "Biggest fall"]]), showSel = mkSel("show", [["pct", "Share of games"], ["count", "Number of games"]]);
+  const binL = h("label", { text: "Era size" }, binSel), orderL = h("label", { text: "Platform order" }, orderSel);
+  const controls = h("div", { class: "filters rel-controls" }, h("div", { class: "seg-row" }, seg), binL, orderL, h("label", { text: "Sort genres by" }, sortSel), h("label", { text: "Show" }, showSel));
+  const note = h("p", { class: "chart-sub rel-note" });
+  const legendBox = h("div", {});
+  let res;
+
+  const specFor = () => {
+    const nC = res.cols.length, pct = c.show !== "count", era = res.across === "era";
+    const noun = era ? "era" : "platform";
+    const maxCount = Math.max(1, ...res.rows.flatMap(r => r.counts));
+    const lab = j => res.cols[j].label;
+    const cell = (i, j) => {
+      const r = res.rows[i];
+      if (j === nC) {
+        if (r.change == null) return { fill: "--surface-2", text: "–", muted: true, tip: ["No change figure", `needs two ${noun}s with ${res.minGames}+ games`] };
+        return { fill: chgVar(r.change), text: pts(r.change), aria: `${r.name} change ${pts(r.change)} points`,
+                 tip: [`${pts(r.change)} points`, `${r.name}: ${fmtPct(r.shares[res.first])} in ${lab(res.first)} → ${fmtPct(r.shares[res.last])} in ${lab(res.last)}`] };
+      }
+      const sh = r.shares[j], n = res.cols[j].n;
+      if (sh == null) return { fill: "--surface-2", text: "–", muted: true, tip: ["Too few games", `${lab(j)} has only ${fmt(n)} games in this slice (needs ${res.minGames}+)`] };
+      return pct
+        ? { fill: liftVar(r.overall > 0 ? sh / r.overall : null), text: fmtPct(sh), aria: `${r.name}, ${lab(j)}: ${fmtPct(sh)}`,
+            tip: [fmtPct(sh), `${r.name} is ${fmtPct(sh)} of ${lab(j)} games (${fmt(r.counts[j])} of ${fmt(n)}), versus ${fmtPct(r.overall)} across all ${noun}s`] }
+        : { fill: seqVar(r.counts[j], maxCount), text: cellCount(r.counts[j]), aria: `${r.name}, ${lab(j)}: ${fmt(r.counts[j])} games`,
+            tip: [fmt(r.counts[j]), `${r.name} games in ${lab(j)} (${fmtPct(sh)} of ${fmt(n)})`] };
+    };
+    const footers = [{ label: "Games in column", cell: j => (j < nC ? { fill: "--surface-2", text: cellCount(res.cols[j].n), tip: [fmt(res.cols[j].n), `games in ${lab(j)}`] } : null) }];
+    if (!era) footers.push({ label: "Median release year", cell: j => (j < nC ? { fill: "--surface-2", text: String(res.cols[j].age ?? "–"), tip: [String(res.cols[j].age ?? "unknown"), `median release year of ${lab(j)} games`] } : null) });
+    return {
+      draw: host => drawGrid(host, { rows: res.rows.map(r => r.name), cols: [...res.cols.map(x => x.label), "Change"], rotate: true, aria: `Genre share by ${noun}`,
+        corner: `Genre ↓  ·  ${era ? "Era" : "Platform (old → new)"} →`, rowNotes: res.rows.map(r => `avg ${fmtPct(r.overall)}`), cell, footers }),
+      table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "Genre" }), res.cols.map(x => h("th", { text: x.label })), h("th", { text: "Change (pts)" }))),
+        h("tbody", {}, res.rows.map(r => h("tr", {}, h("td", { text: r.name }), r.shares.map((v, j) => h("td", { text: v == null ? "–" : `${fmtPct(v)} (${fmt(r.counts[j])})` })), h("td", { text: r.change == null ? "–" : pts(r.change) }))),
+          h("tr", {}, h("td", { text: "Games in column" }), res.cols.map(x => h("td", { text: fmt(x.n) })), h("td", { text: "" })))),
+    };
+  };
+  const heat = vizCard({ title: "Genre share, column by column", sub: "", draw: () => {}, table: () => h("div"), headExtra: h("div", {}, controls) });
+  heat.insertBefore(note, heat.querySelector(".chart")); heat.append(legendBox);
+
+  // the trend lines: which genres, defaulting to the biggest movers
+  const lineChips = h("div", { class: "presets" });
+  const trend = vizCard({ title: "Trend lines", sub: "Pick up to four genres to follow across the columns.", headExtra: lineChips, draw: () => {}, table: () => h("div") });
+  const chosen = () => { const ids = c.lines.filter(id => res.rows.some(r => r.id === id)); if (ids.length) return ids;
+    const movers = res.rows.filter(r => r.change != null && r.overall >= 3);
+    const risers = movers.slice().sort((a, b) => b.change - a.change).slice(0, 2), fallers = movers.slice().sort((a, b) => a.change - b.change).slice(0, 2).filter(r => !risers.includes(r));
+    const pick = [...risers, ...fallers].slice(0, 4); return (pick.length ? pick : res.rows.slice(0, 4)).map(r => r.id); };
+  const drawTrend = () => {
+    const ids = chosen(), rows = ids.map(id => res.rows.find(r => r.id === id)).filter(Boolean);
+    lineChips.replaceChildren(...res.rows.map(r => h("button", { type: "button", class: "chip pick" + (ids.includes(r.id) ? " on" : ""), text: r.name,
+      onclick: () => { let cur = chosen(); if (cur.includes(r.id)) { cur = cur.filter(x => x !== r.id); trendSlots.delete(r.id); } else if (cur.length < 4) cur = [...cur, r.id]; else return;
+        c.lines = cur; writeStatsUrl(); drawTrend(); } })));
+    ids.forEach(slotFor);
+    const series = rows.map(r => ({ name: r.name, color: `--series-${slotFor(r.id)}`, values: r.shares }));
+    trend.update({ sub: "Share of each column's games that are in the genre. Gaps are columns with too few games.",
+      draw: host => drawLines(host, { labels: res.cols.map(x => x.label), series, aria: "Genre share trend" }),
+      table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "" }), res.cols.map(x => h("th", { text: x.label })))),
+        h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: r.name }), r.shares.map(v => h("td", { text: v == null ? "–" : fmtPct(v) })))))) });
+    trend.querySelector(".chart-legend")?.remove();
+    const legend = h("div", { class: "legend chart-legend" }, series.map(sr => h("span", { class: "lg inline" }, h("i", { class: "line", style: `background:var(${sr.color})` }), sr.name)));
+    trend.insertBefore(legend, trend.querySelector(".chart"));
+  };
+
+  function rebuild() {
+    seg.forEach((b, i) => b.classList.toggle("on", c.across === ["era", "platform"][i]));
+    binL.hidden = c.across !== "era"; orderL.hidden = c.across !== "platform";
+    res = A.compareShares(G, facets, { across: c.across, bin: c.bin, order: c.order, sort: c.sort, platformIds: sl.platforms, options: opts });
+    if (!res.valid.length) {
+      heat.update({ sub: "", draw: host => host.replaceChildren(h("p", { class: "muted", text: `No ${c.across === "era" ? "era" : "platform"} has ${res.minGames}+ games in this slice, so there is nothing to compare. Widen the slice above.` })), table: () => h("div") });
+      trend.hidden = true; legendBox.replaceChildren(); note.textContent = ""; return;
+    }
+    trend.hidden = false;
+    const era = c.across === "era", pct = c.show !== "count";
+    note.textContent = (era ? "Each column is a group of release years. " : "Each column is a platform, oldest to newest by the median release year of its games. ") +
+      (pct ? "Each cell is the share of the column's games that are in the genre (a game can have several genres, so a column adds up to more than 100%). Color compares it with the genre's share across all columns: blue is higher than usual there, red lower. "
+           : "Each cell is the number of games in the genre. ") +
+      `Change is the last column's share minus the first's, in percentage points. Columns with fewer than ${res.minGames} games show no numbers.`;
+    const sp = specFor();
+    heat.update({ sub: "", draw: sp.draw, table: sp.table });
+    legendBox.replaceChildren(
+      pct ? swatches([["--div-neg-4", "≤0.4×"], ["--div-neg-3", "0.5×"], ["--div-neg-2", "0.65×"], ["--div-neg-1", "0.8×"], ["--div-0", "usual"], ["--div-pos-1", "1.2×"], ["--div-pos-2", "1.5×"], ["--div-pos-3", "2×"], ["--div-pos-4", "2.5×+"]])
+          : swatches([["--seq-1", "0"], ["--seq-2", ""], ["--seq-3", ""], ["--seq-4", ""], ["--seq-5", ""], ["--seq-6", ""], ["--seq-7", compact(Math.max(1, ...res.rows.flatMap(r => r.counts)))]]),
+      h("p", { class: "chart-sub", text: pct ? "Share compared with the genre's usual share across the columns (× that average)." : "Colors run on a square-root scale, so smaller counts stay visible." }),
+      swatches([["--div-neg-4", `${MINUS}10`], ["--div-neg-3", `${MINUS}6`], ["--div-neg-2", `${MINUS}3`], ["--div-neg-1", `${MINUS}1`], ["--div-0", "~0"], ["--div-pos-1", "+1"], ["--div-pos-2", "+3"], ["--div-pos-3", "+6"], ["--div-pos-4", "+10"]]),
+      h("p", { class: "chart-sub", text: "Change column: how many percentage points the share moved from the first column to the last." }));
+    drawTrend(); trend.redraw();
+  }
+  const section = h("section", { class: "rel-section" }, h("h2", { class: "section-title", text: "How the genre mix changes" }),
+    h("p", { class: "muted", text: "Compare genres across release eras, or across platforms from older to newer systems. It follows the era, platform and genre choices above." }),
+    h("div", { class: "charts rel-charts" }, heat, trend));
+  rebuild();
+  section.redraw = () => { heat.redraw(); trend.redraw(); };
+  return section;
+}
+
+/* ---------- relationships: correlation matrix + a comparison with changeable axes ---------- */
+function relationshipsSection(state) {
   const hasTtb = !!facets.has_time_to_beat;
-  if (!state.x) state.x = hasTtb ? "ttb" : "year";
-  if (!state.y) state.y = "rating";
   const slot = h("div", { class: "rel-slot" }, h("p", { class: "muted", text: "Loading the relationship analysis…" }));
   const trimBox = h("input", { type: "checkbox", checked: state.trim, onchange: e => { state.trim = e.target.checked; keep(); load(); } });
   const section = h("section", { class: "rel-section" }, h("h2", { class: "section-title", text: "Relationships" }),
-    h("p", { class: "muted", text: "How genre, rating, time to beat, release year and popularity relate to each other." }),
+    h("p", { class: "muted", text: "How genre, rating, time to beat, release year and popularity relate to each other" + (sliceActive() ? ", within the slice chosen above." : ".") }),
     h("label", { class: "trim-switch", title: "Ignores the lowest 1% and highest 1% of time to beat and of number of ratings, so a few extreme or mistaken entries don't stretch the charts." },
       trimBox, " Trim extremes ", h("span", { class: "muted", text: "(ignore the lowest and highest 1% of time to beat and number of ratings)" })),
     slot);
-  const keep = () => { const q = new URLSearchParams({ x: state.x, y: state.y }); if (state.agg) q.set("agg", state.agg); if (state.show === "count") q.set("show", "count"); if (state.view) q.set("view", state.view); if (!state.trim) q.set("trim", "0"); if (state.method === "pearson") q.set("m", "pearson");
-    history.replaceState(null, "", appUrl("/stats", q)); };
+  const keep = () => writeStatsUrl();
   const load = async () => {
     try {
       const G = await getColumns();
@@ -1074,47 +1397,60 @@ function relationshipsSection(params) {
       matrix.redraw(); explorer.redraw();
     } catch (e) { slot.replaceChildren(h("div", { class: "error" }, h("b", { text: "Couldn't load the relationship analysis. " }), h("code", { text: e.message }))); }
   };
-  if ("IntersectionObserver" in window) {              // the table is a few MB: fetch it once this section is near the screen
-    const io = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) { io.disconnect(); load(); } }, { rootMargin: "500px" });
-    io.observe(slot);
-  } else load();
+  load();
   return section;
 }
 
 async function statsPage(params) {
   document.title = "Stats · VideoGameData Explorer";
-  const st = await api("api/stats");
-  const t = st.totals;
+  app.replaceChildren(h("h1", { text: "Stats" }), h("p", { class: "muted", text: "Loading the games…" }));
+  let G;
+  try { G = await getColumns(); } catch (e) { throw e; }
+  readStatsState(params || new URLSearchParams());
+  const A = IGDB_ANALYSIS, results = h("div", { class: "stats-results" });
+  const pivot = pivotBar(G, () => renderResults());
+  app.replaceChildren(h("h1", { text: "Stats" }), scopeNote(), pivot.el, results);
+
   const pctOf = (a, b) => b ? ` (${Math.round(100 * a / b)}%)` : "";
   const tile = (v, k) => h("div", { class: "tile" }, h("div", { class: "v", text: v }), h("div", { class: "k", text: k }));
-  const cards = [
-    chartCard("Games released per year", "Release year of every game with a date, 1970 onward", st.per_year, { axis: "Year", unit: "games" }),
-    chartCard("Rating distribution", "Average user + critic score, games with at least 5 ratings", st.ratings.map(r => ({ ...r, label: r.label })),
-      { axis: "Score range", unit: "games", labelGap: 34, labelOf: r => `${r.label}–${r.label + 9}` }),
-    chartCard("Top genres", "Games per genre (a game can have several)", st.top_genres, { horizontal: true, axis: "Genre", unit: "games" }),
-    chartCard("Top platforms", "Games per platform (a game can be on several)", st.top_platforms, { horizontal: true, axis: "Platform", unit: "games" }),
-    ...(st.ttb_buckets && st.ttb_buckets.length ? [
-      chartCard("How long games take to beat", "Normal playthrough, games with at least 3 player reports", st.ttb_buckets,
-        { axis: "Time to beat", unit: "games", labelGap: 64 }),
-      chartCard("Median time to beat, by genre", "Hours for a normal playthrough; genres with 30+ timed games (a game can have several genres)",
-        st.ttb_by_genre, { horizontal: true, axis: "Genre", unit: "median hours" }),
-      chartCard("Median time to beat, by release year", "Hours for a normal playthrough; years with 20+ timed games",
-        st.ttb_by_year, { axis: "Year", unit: "median hours" }),
-    ] : []),
-  ];
-  app.replaceChildren(
-    h("h1", { text: "Stats" }),
-    scopeNote(),
-    h("div", { class: "tiles" },
-      tile(fmt(t.games), scoped() ? "games with an ESRB rating" : "games in the dump"),
-      tile(fmt(t.rated), "with a rating" + pctOf(t.rated, t.games)),
-      tile(fmt(t.covered), "with cover art" + pctOf(t.covered, t.games)),
-      t.timed ? tile(fmt(t.timed), "with time to beat" + pctOf(t.timed, t.games)) : null,
-      tile(t.first_year != null ? `${t.first_year}–${t.last_year}` : "–", "release years covered")),
-    h("div", { class: "charts" }, cards),
-    relationshipsSection(params || new URLSearchParams()));
-  cards.forEach(c => c.redraw());
+  function renderResults() {
+    const sm = A.sliceMask(G, statsState.slice, scoped());
+    sliceCtx.mask = sm ? sm.mask : null; sliceCtx.key = sm ? sm.key : "";
+    const opts = { scoped: scoped(), mask: sliceCtx.mask, maskKey: sliceCtx.key };
+    const sum = A.summarize(G, facets, opts), t = sum.totals;
+    pivot.update(t.games);
+    if (!t.games) {
+      results.replaceChildren(h("div", { class: "error" }, h("b", { text: "No games match this slice. " }), "Try a wider era or fewer platform or genre choices."));
+      return;
+    }
+    const cards = [
+      chartCard("Games released per year", "Release year of every game with a date, 1970 onward", sum.per_year, { axis: "Year", unit: "games" }),
+      chartCard("Rating distribution", "Average user + critic score, games with at least 5 ratings", sum.ratings,
+        { axis: "Score range", unit: "games", labelGap: 34, labelOf: r => `${r.label}–${r.label + 9}` }),
+      chartCard("Top genres", "Games per genre (a game can have several)", sum.top_genres, { horizontal: true, axis: "Genre", unit: "games" }),
+      chartCard("Top platforms", "Games per platform (a game can be on several)", sum.top_platforms, { horizontal: true, axis: "Platform", unit: "games" }),
+      ...(sum.ttb_buckets.length ? [
+        chartCard("How long games take to beat", "Normal playthrough, games with at least 3 player reports", sum.ttb_buckets, { axis: "Time to beat", unit: "games", labelGap: 64 }),
+        ...(sum.ttb_by_genre.length ? [chartCard("Median time to beat, by genre", "Hours for a normal playthrough; genres with 30+ timed games (a game can have several genres)", sum.ttb_by_genre, { horizontal: true, axis: "Genre", unit: "median hours" })] : []),
+        ...(sum.ttb_by_year.length ? [chartCard("Median time to beat, by release year", "Hours for a normal playthrough; years with 20+ timed games", sum.ttb_by_year, { axis: "Year", unit: "median hours" })] : []),
+      ] : []),
+    ];
+    const compare = compareSection(G, opts);
+    results.replaceChildren(
+      h("div", { class: "tiles" },
+        tile(fmt(t.games), sliceActive() ? "games in this slice" : scoped() ? "games with an ESRB rating" : "games in the dump"),
+        tile(fmt(t.rated), "with a rating" + pctOf(t.rated, t.games)),
+        tile(fmt(t.covered), "with cover art" + pctOf(t.covered, t.games)),
+        t.timed ? tile(fmt(t.timed), "with time to beat" + pctOf(t.timed, t.games)) : null,
+        tile(t.first_year != null ? `${t.first_year}–${t.last_year}` : "–", "release years covered")),
+      h("div", { class: "charts" }, cards),
+      compare,
+      relationshipsSection(statsState.rel));
+    cards.forEach(c => c.redraw()); compare.redraw();
+  }
+  renderResults();
 }
+
 let resizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
