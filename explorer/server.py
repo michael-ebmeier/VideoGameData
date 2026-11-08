@@ -95,7 +95,7 @@ class Store:
                  self.rows(f"SELECT id, name FROM {table} WHERE id IN ({marks})", ids)}
         return [found[i] for i in ids if i in found]
 
-    YEAR = "CAST(date_part('year', make_timestamp(g.first_release_date * 1000000)) AS INTEGER)"
+    YEAR = "CAST(date_part('year', make_timestamp(CAST(CAST(g.first_release_date AS BIGINT) * 1000000 AS BIGINT))) AS INTEGER)"
 
     def game_card(self, r):
         return {
