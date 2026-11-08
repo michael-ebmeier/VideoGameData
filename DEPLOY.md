@@ -90,6 +90,13 @@ python build_static.py --out ~/games.brutalc.com --frontend-only
 `--frontend-only` refreshes just the page and script, so it takes a second. I'll say when a change
 also needs the data files rebuilt; then run the same command without `--frontend-only`.
 
+**The ESRB default scope and the "Wild west" switch need one full rebuild.** They add a column to the
+games table and extra files (`facets_all.json`, `stats_all.json`), so after pulling this, run the build
+once **without** `--frontend-only`. The build prints how many games fall in the default scope (for
+example `default scope: 38,000 of 350,000 games have an ESRB rating`), so you can sanity-check it. Until
+you rebuild, the site keeps working but shows everything and has no switch. The nightly job picks it up
+on its own either way.
+
 **The Relationships charts need no data rebuild.** They are calculated in the visitor's browser
 from the same games table the site already has, so `--frontend-only` is enough to get them.
 

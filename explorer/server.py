@@ -116,46 +116,39 @@ class Store:
             print("Note:", self.scope_note, file=sys.stderr)
 
     def _build_scope(self):
-        """Find the games with an ESRB rating other than Adults Only / Rating Pending.
+        """The default scope: games with an ESRB age rating of EC, E, E10+, T or M.
 
-        IGDB has described age ratings two ways and this reads either: the current one (an
-        `organization` id plus a `rating_category`) and the older one (`category` 1 = ESRB, and a numeric
-        `rating` where 6 = Rating Pending and 12 = Adults Only)."""
+        Read straight from IGDB's age-rating tables: `age_rating_organizations` says which id is ESRB,
+        `age_rating_categories` lists that organization's ratings (RP and AO are left out: Rating Pending
+        isn't a rating, and Adults Only is exactly what the default scope is meant to keep out), and each
+        game's `age_ratings` points at `age_ratings` rows that carry a `rating_category`."""
         self.all_n = self.con.execute("SELECT count(*) FROM games WHERE name IS NOT NULL").fetchone()[0]
-        if "age_ratings" not in self.tables or "age_ratings" not in self.game_cols:
-            self.scope_note = "no age ratings in this data; every game is shown"
+        needed = ("age_ratings", "age_rating_organizations", "age_rating_categories")
+        if "age_ratings" not in self.game_cols or any(t not in self.tables for t in needed):
+            self.scope_note = "no age-rating data found; every game is shown"
             return
-        ar = {r[0]: r[1] for r in self.con.execute("DESCRIBE age_ratings").fetchall()}
-        esrb = []
-        if "organization" in ar and "age_rating_organizations" in self.tables:
-            ids = [r[0] for r in self.con.execute(
-                "SELECT id FROM age_rating_organizations WHERE upper(trim(name::VARCHAR)) = 'ESRB'").fetchall()]
-            if ids:
-                esrb.append("ar.organization IN (" + ",".join(str(int(i)) for i in ids) + ")")
-        if "category" in ar:
-            esrb.append("ar.category = 1")
+        esrb = [r[0] for r in self.con.execute(
+            "SELECT id FROM age_rating_organizations WHERE upper(trim(name)) = 'ESRB'").fetchall()]
         if not esrb:
-            self.scope_note = "could not tell which age ratings are ESRB; every game is shown"
+            self.scope_note = "ESRB is not among the age-rating organizations; every game is shown"
             return
-        keep, join = [], ""
-        cat = {r[0] for r in self.con.execute("DESCRIBE age_rating_categories").fetchall()} if "age_rating_categories" in self.tables else set()
-        if "rating_category" in ar and "rating" in cat:
-            join = "LEFT JOIN age_rating_categories cat ON cat.id = ar.rating_category"
-            keep.append("NOT regexp_matches(lower(trim(coalesce(cat.rating::VARCHAR, ''))), '^(ao|rp)([^a-z0-9]|$)|adults only|pending')")
-        if "rating" in ar:
-            keep.append("coalesce(ar.rating::VARCHAR, '') NOT IN ('6', '12')")
-        where = "(" + " OR ".join(esrb) + ")" + "".join(f" AND {k}" for k in keep)
+        org = int(esrb[0])
+        cats = [int(r[0]) for r in self.con.execute(
+            "SELECT id FROM age_rating_categories WHERE organization = ? AND rating IN ('EC', 'E', 'E10+', 'T', 'M')",
+            [org]).fetchall()]
+        if not cats:
+            self.scope_note = "no ESRB rating categories found; every game is shown"
+            return
         self.con.execute(f"DROP TABLE IF EXISTS {RATED}")
         self.con.execute(
             f"CREATE TABLE {RATED} AS SELECT DISTINCT g.id FROM "
             f"(SELECT id, unnest(age_ratings) AS arid FROM games WHERE age_ratings IS NOT NULL AND name IS NOT NULL) g "
-            f"JOIN age_ratings ar ON ar.id = g.arid {join} WHERE {where}")
+            f"JOIN age_ratings ar ON ar.id = g.arid "
+            f"WHERE ar.organization = {org} AND ar.rating_category IN ({','.join(map(str, cats))})")
         self.rated_n = self.con.execute(f"SELECT count(*) FROM {RATED}").fetchone()[0]
         self.scope_ok = self.rated_n > 0
         if not self.scope_ok:
-            self.scope_note = "found no ESRB-rated games (is the age-rating data in an unexpected layout?); every game is shown"
-        elif self.rated_n < 0.01 * max(1, self.all_n):
-            self.scope_note = f"only {self.rated_n:,} of {self.all_n:,} games matched as ESRB-rated; check the age-rating data"
+            self.scope_note = "no games have an ESRB rating in this data; every game is shown"
 
     def scope_of(self, value):
         """'rated' (the default) or 'all'. Without usable ratings everything is 'all'."""

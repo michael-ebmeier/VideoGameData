@@ -71,10 +71,8 @@ TABLES = {
     "involved_companies": {"id": "BIGINT", "game": "BIGINT", "company": "BIGINT",
                            "developer": "BOOLEAN", "publisher": "BOOLEAN"},
     "screenshots": {"id": "BIGINT", "game": "BIGINT", "image_id": "VARCHAR"},
-    # Age ratings decide the default scope (ESRB-rated games). Both of IGDB's layouts are declared; the
-    # fields a dump doesn't have just come out NULL. `rating` is text so either kind of value loads.
-    "age_ratings": {"id": "BIGINT", "organization": "BIGINT", "category": "BIGINT",
-                    "rating_category": "BIGINT", "rating": "VARCHAR"},
+    # Age ratings decide the default scope (games with an ESRB rating).
+    "age_ratings": {"id": "BIGINT", "organization": "BIGINT", "rating_category": "BIGINT"},
     "age_rating_organizations": {"id": "BIGINT", "name": "VARCHAR"},
     "age_rating_categories": {"id": "BIGINT", "organization": "BIGINT", "rating": "VARCHAR"},
     "game_time_to_beats": {"id": "BIGINT", "game_id": "BIGINT", "hastily": "BIGINT",

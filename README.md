@@ -90,6 +90,18 @@ otherwise you get title placeholders. Options: `--port 9000`, `--no-open`, `--db
 
 Stop the server with Ctrl+C. Rebuild the database (`load_duckdb.py`) only while it is stopped.
 
+## Default scope and "Wild west"
+
+By default every list, count and chart covers only games with an **ESRB age rating** (EC, E, E10+, T
+or M), which keeps out unrated shovelware and adult titles and makes the statistics more meaningful.
+ESRB's "Rating Pending" and "Adults Only" don't count, and ratings from other boards (PEGI, CERO, …)
+don't either. A **Wild west** switch in the header (with a confirmation) shows every game instead; the
+choice is remembered in the browser, and the Stats page and Relationships analysis follow it. A game
+outside the scope can still be opened by direct link, with a note. The scope is worked out from
+IGDB's own age-rating tables (`age_ratings`, `age_rating_organizations`, `age_rating_categories`); the
+rule lives in `Store._build_scope` in `explorer/server.py`. If the data has no age ratings, the switch
+doesn't appear and everything is shown.
+
 ## Relationships (Stats page)
 
 The Stats page ends with a **Relationships** section. A correlation matrix shows how rating, time to

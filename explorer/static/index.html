@@ -44,6 +44,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }      /* the hidden attribute must win over any display rule */
   html { background: var(--bg); }
   body {
     margin: 0; background: var(--bg); color: var(--text);
@@ -186,6 +187,20 @@
   table.data td, table.data th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); }
   table.data td:last-child, table.data th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
   .table-wrap { max-height: 280px; overflow: auto; }
+  .wild { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); cursor: pointer;
+          border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; white-space: nowrap; }
+  .wild.on { border-color: var(--accent); color: var(--text); }
+  .wild input { accent-color: var(--accent); }
+  .scope-note { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+  .scope-note.wildnote { color: var(--text-2); }
+  button.linklike { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
+  dialog { background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); max-width: 460px; padding: 18px 20px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .55); }
+  dialog h2 { margin: 0 0 8px; }
+  dialog p { margin: 0 0 16px; color: var(--text-2); }
+  dialog .buttons { display: flex; justify-content: flex-end; gap: 10px; }
+  dialog button { background: none; border: 1px solid var(--line); border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+  dialog button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
   .section-title { font-size: 20px; margin: 36px 0 4px; }
   .rel-charts { grid-template-columns: 1fr; margin-top: 14px; }
   .chart .dot { fill: var(--accent); fill-opacity: .85; stroke: var(--surface); stroke-width: 2; }
@@ -237,8 +252,20 @@
     <form class="search" id="search" role="search">
       <input id="q" type="search" placeholder="Search games…" aria-label="Search games" autocomplete="off">
     </form>
+    <label class="wild" id="wild-wrap" hidden title="Off: only games with an ESRB rating. On: every game in the database.">
+      <input type="checkbox" id="wild"><span>Wild west</span>
+    </label>
   </div>
 </header>
+<dialog id="wild-dialog" aria-labelledby="wild-title">
+  <h2 id="wild-title">Turn on Wild west?</h2>
+  <p>This shows every game in the database, not just those with an ESRB rating: unrated shovelware, adult titles and anything
+     else IGDB lists. The Stats page and its charts will include them too.</p>
+  <form method="dialog" class="buttons">
+    <button value="cancel">Cancel</button>
+    <button value="ok" class="primary" id="wild-ok">Show everything</button>
+  </form>
+</dialog>
 <main id="app"></main>
 <footer class="foot">Game data from <a href="https://www.igdb.com" target="_blank" rel="noopener noreferrer">IGDB.com</a>.</footer>
 <div class="tip" id="tip" role="status"></div>
@@ -269,6 +296,8 @@ const app = document.getElementById("app");
 const fmt = n => (n == null ? "–" : Number(n).toLocaleString());
 
 async function api(path, params) {
+  // every call carries the current scope (games with an ESRB rating by default, or everything)
+  if (path !== "api/columns") params = { ...(params || {}), scope: scopeParam() };
   // The static build adds static-api.js, which answers these calls in the browser (no server).
   if (window.IGDB_STATIC) return window.IGDB_STATIC.api(path, params || {});
   const qs = new URLSearchParams();
@@ -277,6 +306,44 @@ async function api(path, params) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || res.statusText);
   return body;
+}
+
+/* ---------- scope: games with an ESRB rating by default; "wild west" is the opt-in for everything ---------- */
+let wild = false;
+try { wild = localStorage.getItem("igdbWildWest") === "1"; } catch (e) { /* storage can be unavailable */ }
+const scopeParam = () => (wild ? "all" : "rated");
+const scopeAvailable = () => !!(facets.scope && facets.scope.available);
+const scoped = () => scopeAvailable() && !wild;            // true when lists should be limited to ESRB-rated games
+
+async function setWild(on) {
+  wild = on;
+  try { localStorage.setItem("igdbWildWest", on ? "1" : "0"); } catch (e) { /* not remembered; still works */ }
+  try { facets = await api("api/facets"); } catch (e) { /* the page will show the error */ }
+  syncWildUi();
+  route();
+}
+function syncWildUi() {
+  const wrap = document.getElementById("wild-wrap"), box = document.getElementById("wild");
+  wrap.hidden = !scopeAvailable();
+  box.checked = wild && scopeAvailable();
+  wrap.classList.toggle("on", box.checked);
+}
+function askWild() {
+  const dlg = document.getElementById("wild-dialog");
+  if (dlg.showModal) dlg.showModal(); else if (confirm("Show every game, including unrated and adult titles?")) setWild(true);
+}
+document.getElementById("wild").addEventListener("change", e => {
+  if (e.target.checked) { e.target.checked = false; askWild(); } else setWild(false);
+});
+document.getElementById("wild-dialog").addEventListener("close", e => { if (e.target.returnValue === "ok") setWild(true); });
+
+/* a one-line reminder of what the lists are showing, with the way to change it */
+function scopeNote() {
+  if (!scopeAvailable()) return null;
+  const sc = facets.scope, flip = (label, on) => h("button", { type: "button", class: "linklike", text: label, onclick: () => (on ? askWild() : setWild(false)) });
+  return wild
+    ? h("p", { class: "scope-note wildnote" }, `Wild west: showing every game (${fmt(sc.all)}), including ones with no ESRB rating. `, flip("Back to rated games only", false))
+    : h("p", { class: "scope-note" }, `Showing the ${fmt(sc.rated)} games with an ESRB rating (of ${fmt(sc.all)} in the database). `, flip("Turn on Wild west", true), " to include the rest.");
 }
 
 const IMG = "https://images.igdb.com/igdb/image/upload/";
@@ -371,7 +438,7 @@ async function browsePage(params) {
   const countEl = h("p", { class: "count", text: "Loading…" });
   const grid = h("div", { class: "grid loading" });
   const pager = h("div", { class: "pager" });
-  app.replaceChildren(filters, countEl, grid, pager);
+  app.replaceChildren(filters, scopeNote(), countEl, grid, pager);
 
   const data = await api("api/games", cur);
   const pages = Math.max(1, Math.ceil(data.total / data.page_size));
@@ -412,6 +479,7 @@ async function gamePage(id) {
       h("div", { class: "cover-lg" }, cover(g.cover, g.name, "t_cover_big_2x")),
       h("div", {},
         h("h1", { text: g.name }),
+        scoped() && g.rated === false && h("p", { class: "scope-note" }, "This game has no ESRB rating, so lists hide it unless Wild west is on. ", h("button", { type: "button", class: "linklike", text: "Turn on Wild west", onclick: askWild })),
         h("div", { class: "byline", text: [year, g.developers.slice(0, 3).join(", ")].filter(Boolean).join(" · ") }),
         pct != null
           ? h("div", { class: "rating" },
@@ -761,7 +829,7 @@ function scatterTable(res, G) {
 
 /* The correlation matrix card. */
 function matrixCard(G, keys, state, onPick) {
-  const A = IGDB_ANALYSIS, mat = A.correlationMatrix(G, keys), labels = keys.map(k => A.METRICS[k].short);
+  const A = IGDB_ANALYSIS, mat = A.correlationMatrix(G, keys, scoped()), labels = keys.map(k => A.METRICS[k].short);
   const buttons = [["spearman", "Spearman ρ"], ["pearson", "Pearson r"]].map(([k, t]) => h("button", { type: "button", class: "seg" + (state.method === k ? " on" : ""), text: t,
     onclick: () => { state.method = k; sync(); card.update(spec()); buttons.forEach((b, i) => b.classList.toggle("on", ["spearman", "pearson"][i] === k)); } }));
   const spec = () => ({
@@ -825,7 +893,7 @@ function explorerCard(G, state, onChange) {
     if (!xc && !yc) {
       if (state.x === state.y) { note.textContent = "Choose two different measures to compare."; spec = { draw: h0 => h0.replaceChildren(h("p", { class: "muted", text: "Choose two different measures to compare." })), table: () => h("div") }; }
       else {
-        const res = A.scatter(G, state.x, state.y);
+        const res = A.scatter(G, state.x, state.y, scoped());
         const lg = A.METRICS[state.x].log || A.METRICS[state.y].log;
         note.textContent = res.n < 3 ? `Too few games have data for both ${mname(state.x)} and ${mname(state.y)}.`
           : `${fmt(res.n)} games have data for both ${mname(state.x)} and ${mname(state.y)}. Spearman ρ = ${signed(res.spearman)} (${A.strength(res.spearman)}); Pearson r = ${signed(res.pearson)}${lg ? " on a log scale" : ""}. ` +
@@ -834,7 +902,7 @@ function explorerCard(G, state, onChange) {
       }
     } else if (xc !== yc) {
       const catKey = xc ? state.x : state.y, numKey = numK, agg = aggNow;
-      const res = A.categoryBars(G, facets, catKey, numKey, agg), word = agg === "median" ? "Median" : "Mean";
+      const res = A.categoryBars(G, facets, catKey, numKey, agg, scoped()), word = agg === "median" ? "Median" : "Mean";
       const diff = viewNow === "diff" && res.overall != null;
       const overallText = res.overall != null ? fmtVal(numKey, res.overall) : "";
       const rows = res.rows.map(r => ({ ...r, diff: Math.round((r.value - (res.overall || 0)) * 10) / 10 }));
@@ -851,7 +919,7 @@ function explorerCard(G, state, onChange) {
           h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: r.label }), h("td", { text: fmt(r.n) }), h("td", { text: fmtVal(numKey, r.value) }), h("td", { text: signedVal(r.diff, numKey) }))))),
       };
     } else {
-      const res = A.crossTab(G, facets, state.y, state.x, state.show), pct = state.show === "pct", same = state.x === state.y;
+      const res = A.crossTab(G, facets, state.y, state.x, state.show, scoped()), pct = state.show === "pct", same = state.x === state.y;
       const max = Math.max(1, ...res.cells.flat().map((v, k) => (pct ? res.pct[Math.floor(k / res.cols.length)][k % res.cols.length] : v)));
       note.textContent = same
         ? `${pct ? "Of the games in each row's genre, the share that also have the column's genre" : "Games that have both genres"}. The diagonal is the genre's own total.`
@@ -928,8 +996,9 @@ async function statsPage(params) {
   ];
   app.replaceChildren(
     h("h1", { text: "Stats" }),
+    scopeNote(),
     h("div", { class: "tiles" },
-      tile(fmt(t.games), "games in the dump"),
+      tile(fmt(t.games), scoped() ? "games with an ESRB rating" : "games in the dump"),
       tile(fmt(t.rated), "with a rating" + pctOf(t.rated, t.games)),
       tile(fmt(t.covered), "with cover art" + pctOf(t.covered, t.games)),
       t.timed ? tile(fmt(t.timed), "with time to beat" + pctOf(t.timed, t.games)) : null,
@@ -947,6 +1016,7 @@ window.addEventListener("resize", () => {
 /* ---------- start ---------- */
 (async () => {
   try { facets = await api("api/facets"); } catch (e) { /* the page itself will show the error */ }
+  syncWildUi();
   route();
 })();
 </script>
