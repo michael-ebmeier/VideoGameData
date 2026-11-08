@@ -90,6 +90,10 @@ python build_static.py --out ~/games.brutalc.com --frontend-only
 `--frontend-only` refreshes just the page and script, so it takes a second. I'll say when a change
 also needs the data files rebuilt; then run the same command without `--frontend-only`.
 
+**Link previews (Discord and others) need one full rebuild.** The detail files gain each game's name
+and cover, which the preview page reads. Until you rebuild, shared links still work but show a generic
+title and no picture. See "Link previews" below.
+
 **The ESRB default scope and the "Wild west" switch need one full rebuild.** They add a column to the
 games table and extra files (`facets_all.json`, `stats_all.json`), so after pulling this, run the build
 once **without** `--frontend-only`. The build prints how many games fall in the default scope (for
@@ -104,6 +108,27 @@ from the same games table the site already has, so `--frontend-only` is enough t
 files, so after pulling it, run the build once **without** `--frontend-only` (the same command as
 step 4). Until then the site keeps working but hides the time-to-beat controls and charts. The
 nightly job picks it up on its own either way.
+
+## Link previews (Discord and others)
+Everything after the `#` in `https://games.brutalc.com/#/game/178026` stays in the browser, so chat apps
+can't tell which game that link is. Each game page therefore has a **Copy share link** button that copies
+`https://games.brutalc.com/game/178026` instead. That address is answered by `share.php`, which returns
+the preview tags for that game (title and year, rating, time to beat, genres, platforms, a short summary
+and a screenshot, or the cover if there is no screenshot) and then sends people on to the real page.
+Posting the link in Discord shows the preview; opening it in a browser lands on the normal game page.
+
+- **Needs PHP**, which cPanel hosts such as Bluehost run by default. The build writes `share.php` and the
+  rewrite rule that points `/game/123` at it, inside a marked section of the site's `.htaccess`. Anything
+  else in that file (for instance cPanel's PHP settings) is left alone.
+- **If PHP is off for the subdomain**, build with `--no-php --share-pages 3000`. That skips `share.php` and
+  instead pre-builds plain-HTML preview pages for the 3,000 most-rated games (`game-pages/`, about 12 MB).
+  Other games then have no preview, and the share button is hidden. You can also add `--share-pages N`
+  to a normal build; the pre-built page is used when one exists.
+- **The front page** (`https://games.brutalc.com`) has its own preview tags too.
+- **Discord caches previews.** After changing anything, an old link may keep its old preview for a while,
+  so test with a game you haven't posted before, ideally in a private channel.
+- Check what a link returns with `curl -A "Discordbot/2.0" https://games.brutalc.com/game/178026`; look for
+  the `og:title`, `og:description` and `og:image` lines.
 
 ## Try it on your own computer first
 ```powershell

@@ -7,6 +7,14 @@
 <!--STATIC_API-->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VideoGameData Explorer</title>
+<meta name="description" content="Search and explore the IGDB video game database: ratings, genres, platforms, time to beat, and how they relate.">
+<meta property="og:site_name" content="VideoGameData">
+<meta property="og:type" content="website">
+<meta property="og:title" content="VideoGameData Explorer">
+<meta property="og:description" content="Search and explore the IGDB video game database: ratings, genres, platforms, time to beat, and how they relate.">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#3987e5">
+<meta name="share-mode" content="__SHARE_MODE__">
 <style>
   :root {
     color-scheme: dark;
@@ -149,6 +157,8 @@
     background: linear-gradient(90deg, var(--star) var(--p), var(--surface-2) var(--p));
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
+  button.share { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 2px 12px; font-size: 13px; color: var(--text-2); cursor: pointer; margin-left: 8px; }
+  button.share:hover { border-color: var(--accent); color: var(--text); }
   .ttb { margin: 14px 0; }
   .ttb-row { display: flex; flex-wrap: wrap; gap: 10px; }
   .ttb-item { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 14px; min-width: 110px; }
@@ -456,6 +466,18 @@ async function browsePage(params) {
 }
 
 /* ---------- game page ---------- */
+/* The link to post in chat. Everything after # stays in the browser, so chat apps can't tell which game a
+   /#/game/123 link is; /game/123 is answered by share.php with that game's preview tags. */
+const shareMode = () => (document.querySelector('meta[name="share-mode"]') || {}).content;   // "php": any game can be shared
+function shareButton(id) {
+  const url = new URL(`game/${id}`, document.baseURI).href;
+  const btn = h("button", { type: "button", class: "share", text: "Copy share link", title: url, onclick: async () => {
+    try { await navigator.clipboard.writeText(url); btn.textContent = "Copied!"; }
+    catch (e) { window.prompt("Copy this link:", url); return; }
+    setTimeout(() => { btn.textContent = "Copy share link"; }, 1600);
+  } });
+  return btn;
+}
 function timeToBeat(t) {
   const items = [["Rushed", t.hastily], ["Normal", t.normally], ["Completionist", t.completely]]
     .filter(([, sec]) => sec != null);
@@ -499,7 +521,8 @@ async function gamePage(id) {
           fact("Themes", g.themes), fact("Modes", g.modes), fact("Perspectives", g.perspectives),
           g.critic_rating != null ? fact("Critic score", Math.round(g.critic_rating) + " / 100") : [],
           g.user_rating != null ? fact("User score", Math.round(g.user_rating) + " / 100") : []),
-        g.url && h("a", { class: "chip", href: g.url, target: "_blank", rel: "noopener noreferrer", text: "View on IGDB ↗" }))),
+        g.url && h("a", { class: "chip", href: g.url, target: "_blank", rel: "noopener noreferrer", text: "View on IGDB ↗" }),
+        window.IGDB_STATIC && shareMode() === "php" && shareButton(g.id))),
     g.storyline && h("section", { class: "block" }, h("h2", { text: "Storyline" }), h("p", { class: "summary", text: g.storyline })),
     g.screenshots.length ? h("section", { class: "block" }, h("h2", { text: "Screenshots" }),
       h("div", { class: "shots" }, g.screenshots.map(i => h("img", { src: `${IMG}t_screenshot_med/${i}.jpg`, alt: "", loading: "lazy",
