@@ -90,6 +90,11 @@ python build_static.py --out ~/games.brutalc.com --frontend-only
 `--frontend-only` refreshes just the page and script, so it takes a second. I'll say when a change
 also needs the data files rebuilt; then run the same command without `--frontend-only`.
 
+**Time to beat needs one full rebuild.** The time-to-beat feature adds new columns to the data
+files, so after pulling it, run the build once **without** `--frontend-only` (the same command as
+step 4). Until then the site keeps working but hides the time-to-beat controls and charts. The
+nightly job picks it up on its own either way.
+
 ## Try it on your own computer first
 ```powershell
 python build_static.py --out site

@@ -7,7 +7,7 @@ Python app, database or Passenger on the host. The visitor's browser does the se
   python build_static.py --out site                    # a local folder to try it out
 
 It reads only the IGDB tables the explorer shows (games, covers, genres, platforms, themes,
-game_modes, player_perspectives, companies, involved_companies, screenshots) from
+game_modes, player_perspectives, companies, involved_companies, screenshots, game_time_to_beats) from
 data/igdb/*.jsonl and writes into --out:
 
   index.html, static-api.js      the page (same UI as `python explorer/server.py`)
@@ -42,7 +42,7 @@ import duckdb
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "explorer"))
-from server import Store  # noqa: E402  (reuse its facets/stats queries so both versions agree)
+from server import TTB10, TTB_SUB, Store  # noqa: E402  (reuse its facets/stats queries so both versions agree)
 
 SHARD = 500                      # games per detail file
 HTACCESS_MARK = "# igdb-explorer static site"
@@ -68,6 +68,8 @@ TABLES = {
     "involved_companies": {"id": "BIGINT", "game": "BIGINT", "company": "BIGINT",
                            "developer": "BOOLEAN", "publisher": "BOOLEAN"},
     "screenshots": {"id": "BIGINT", "game": "BIGINT", "image_id": "VARCHAR"},
+    "game_time_to_beats": {"id": "BIGINT", "game_id": "BIGINT", "hastily": "BIGINT",
+                           "normally": "BIGINT", "completely": "BIGINT", "count": "BIGINT"},
 }
 
 
@@ -110,13 +112,16 @@ def write_json(path, obj):
 
 def build_games_table(con, vdir):
     """The one table the browser searches: every named game, as parallel columns."""
-    cols = {k: [] for k in ("id", "name", "year", "rel", "rating", "votes", "cover", "genres", "platforms")}
+    cols = {k: [] for k in ("id", "name", "year", "rel", "rating", "votes", "cover", "genres", "platforms",
+                            "ttb", "ttbn")}
     cur = con.execute(f"""
         SELECT g.id, g.name, {Store.YEAR} AS year,
                CAST(floor(g.first_release_date / 86400.0) AS INTEGER) AS rel,
                CAST(round(g.total_rating * 100) AS INTEGER) AS rating,
-               g.total_rating_count AS votes, cv.image_id AS cover, g.genres, g.platforms
+               g.total_rating_count AS votes, cv.image_id AS cover, g.genres, g.platforms,
+               {TTB10} AS ttb, tb.reports AS ttbn
         FROM games g LEFT JOIN covers cv ON cv.id = g.cover
+        LEFT JOIN {TTB_SUB} tb ON tb.game_id = g.id
         WHERE g.name IS NOT NULL ORDER BY g.id""")
     while True:
         rows = cur.fetchmany(50000)
@@ -139,12 +144,13 @@ def build_details(con, vdir):
     def pairs(table, ids):
         return [(i, lookup[table][i]) for i in (ids or []) if i in lookup[table]]
 
-    cur = con.execute("""
+    cur = con.execute(f"""
         SELECT g.id, g.summary, g.storyline, g.first_release_date, g.total_rating,
                g.total_rating_count, g.rating, g.aggregated_rating, g.url,
                g.genres, g.platforms, g.themes, g.game_modes, g.player_perspectives, g.similar_games,
-               (ss.shots)[1:12], co.devs, co.pubs
+               (ss.shots)[1:12], co.devs, co.pubs, tb.hastily, tb.normally, tb.completely, tb.reports
         FROM games g
+        LEFT JOIN {TTB_SUB} tb ON tb.game_id = g.id
         LEFT JOIN (SELECT game, list(image_id ORDER BY id) AS shots FROM screenshots GROUP BY game) ss
                ON ss.game = g.id
         LEFT JOIN (SELECT ic.game,
@@ -167,7 +173,7 @@ def build_details(con, vdir):
         if not rows:
             break
         for (gid, summary, story, released, rating, votes, urating, crating, url, genres, plats,
-             themes, modes, persp, similar, shots, devs, pubs) in rows:
+             themes, modes, persp, similar, shots, devs, pubs, t_fast, t_norm, t_full, t_n) in rows:
             if gid // SHARD != shard:
                 flush()
                 shard = gid // SHARD
@@ -182,6 +188,8 @@ def build_details(con, vdir):
                 "perspectives": [n for _, n in pairs("player_perspectives", persp)],
                 "screenshots": shots, "developers": devs, "publishers": pubs,
                 "similar_ids": (similar or [])[:12],
+                "time_to_beat": ({"hastily": t_fast, "normally": t_norm, "completely": t_full, "count": t_n}
+                                 if any(v is not None for v in (t_fast, t_norm, t_full)) else None),
             }
             current[str(gid)] = {k: v for k, v in detail.items() if v not in (None, [], "")}
     flush()

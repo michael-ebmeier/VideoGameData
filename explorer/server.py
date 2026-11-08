@@ -46,7 +46,19 @@ SORTS = {
     "newest": "g.first_release_date DESC NULLS LAST, g.id",
     "oldest": "g.first_release_date ASC NULLS LAST, g.id",
     "name": "g.name ASC NULLS LAST, g.id",
+    "shortest": "{ttb} ASC NULLS LAST, g.id",
+    "longest": "{ttb} DESC NULLS LAST, g.id",
 }
+
+# Time to beat (IGDB's game_time_to_beats; seconds). Figures built on fewer reports than this are
+# too noisy to sort or chart by.
+MIN_REPORTS = 3
+MIN_GENRE_GAMES, MIN_YEAR_GAMES = 30, 20
+# One row per game (the one with the most reports), joined as `tb`.
+TTB_SUB = ('(SELECT game_id, normally, hastily, completely, "count" AS reports FROM ('
+           'SELECT *, row_number() OVER (PARTITION BY game_id ORDER BY "count" DESC NULLS LAST, id) AS rn '
+           'FROM game_time_to_beats) WHERE rn = 1)')
+TTB10 = "CAST(round(tb.normally / 360.0) AS INTEGER)"     # normal playthrough in tenths of an hour
 
 
 def clean(v):
@@ -80,6 +92,12 @@ class Store:
         if "games" not in self.tables:
             sys.exit(f"{path} has no 'games' table. Did the download include it?")
         self.game_cols = {r[0] for r in self.con.execute("DESCRIBE games").fetchall()}
+        self.has_ttb, self.ttb_rows = False, 0
+        if "game_time_to_beats" in self.tables:
+            cols = {r[0] for r in self.con.execute("DESCRIBE game_time_to_beats").fetchall()}
+            self.has_ttb = {"game_id", "normally", "count"} <= cols
+            if self.has_ttb:
+                self.ttb_rows = self.con.execute("SELECT count(*) FROM game_time_to_beats").fetchone()[0]
         self._cache = {}
         self._lock = threading.Lock()
 
@@ -100,6 +118,15 @@ class Store:
             return "LEFT JOIN covers cv ON cv.id = g.cover", "cv.image_id"
         return "", "NULL"
 
+    def ttb_join(self):
+        return f"LEFT JOIN {TTB_SUB} tb ON tb.game_id = g.id" if self.has_ttb else ""
+
+    def ttb10(self):
+        return TTB10 if self.has_ttb else "NULL::INTEGER"
+
+    def reports(self):
+        return "tb.reports" if self.has_ttb else "NULL::BIGINT"
+
     def pairs(self, table, ids):
         """[(id, name), ...] for the ids that have a name, in the original order."""
         ids = as_int_list(ids)
@@ -119,13 +146,14 @@ class Store:
         return {
             "id": r["id"], "name": r["name"], "year": clean(r["year"]),
             "rating": clean(r["rating"]), "votes": clean(r["votes"]), "cover": r["cover"],
+            "ttb": None if r["ttb10"] is None else r["ttb10"] / 10,
         }
 
     def card_select(self):
         join, cover = self.cover_join()
         sql = (f"SELECT g.id, g.name, {self.YEAR} AS year, {self.col('total_rating')} AS rating, "
-               f"{self.col('total_rating_count', 'BIGINT')} AS votes, {cover} AS cover "
-               f"FROM games g {join}")
+               f"{self.col('total_rating_count', 'BIGINT')} AS votes, {cover} AS cover, "
+               f"{self.ttb10()} AS ttb10 FROM games g {join} {self.ttb_join()}")
         return sql
 
     # -- endpoints ---------------------------------------------------------
@@ -147,9 +175,20 @@ class Store:
                 where.append(f"{self.YEAR} {op} ?")
                 params.append(int(val))
 
+        length = (q.get("length") or [""])[0]
+        m = re.fullmatch(r"(\d{1,3})-(\d{0,3})", length)       # hours, e.g. "10-20" or "40-"
+        if m:
+            where.append(f"{self.ttb10()} >= ?")
+            params.append(int(m.group(1)) * 10)
+            if m.group(2):
+                where.append(f"{self.ttb10()} < ?")
+                params.append(int(m.group(2)) * 10)
+
         sort = (q.get("sort") or ["popular"])[0]
         if sort not in SORTS:
             sort = "popular"
+        if sort in ("shortest", "longest"):
+            where.append(f"{self.ttb10()} IS NOT NULL AND {self.reports()} >= {MIN_REPORTS}")
         if sort == "newest":
             where.append("g.first_release_date <= ?")
             params.append(int(time.time()))
@@ -165,9 +204,10 @@ class Store:
         raw_page = (q.get("page") or ["1"])[0]
         page = max(1, int(raw_page)) if raw_page.isdigit() else 1
         clause = " AND ".join(where)
-        total = self.rows(f"SELECT count(*) AS n FROM games g WHERE {clause}", params)[0]["n"]
+        total = self.rows(f"SELECT count(*) AS n FROM games g {self.ttb_join()} WHERE {clause}", params)[0]["n"]
+        order = SORTS[sort].format(ttb=self.ttb10())
         rows = self.rows(
-            f"{self.card_select()} WHERE {clause} ORDER BY {SORTS[sort]} LIMIT {PAGE_SIZE} OFFSET ?",
+            f"{self.card_select()} WHERE {clause} ORDER BY {order} LIMIT {PAGE_SIZE} OFFSET ?",
             params + [(page - 1) * PAGE_SIZE])
         return {"total": total, "page": page, "page_size": PAGE_SIZE,
                 "games": [self.game_card(r) for r in rows]}
@@ -192,7 +232,13 @@ class Store:
             "modes": self.names("game_modes", g.get("game_modes")),
             "perspectives": self.names("player_perspectives", g.get("player_perspectives")),
             "cover": None, "screenshots": [], "developers": [], "publishers": [], "similar": [],
+            "time_to_beat": None,
         }
+        if self.has_ttb:
+            r = self.rows(f"SELECT hastily, normally, completely, reports FROM {TTB_SUB} tb WHERE game_id = ?", [game_id])
+            if r and any(r[0][k] is not None for k in ("hastily", "normally", "completely")):
+                out["time_to_beat"] = {"hastily": r[0]["hastily"], "normally": r[0]["normally"],
+                                       "completely": r[0]["completely"], "count": r[0]["reports"]}
         if "covers" in self.tables and g.get("cover") is not None:
             r = self.rows("SELECT image_id FROM covers WHERE id = ?", [g["cover"]])
             out["cover"] = r[0]["image_id"] if r else None
@@ -228,6 +274,7 @@ class Store:
                     f"GROUP BY t.id, t.name ORDER BY n DESC, t.id")
         out["platforms"] = [p for p in out["platforms"] if p["n"] >= 50]
         out["genres"].sort(key=lambda r: r["name"] or "")
+        out["has_time_to_beat"] = self.ttb_rows > 0
         return out
 
     def stats(self):
@@ -243,6 +290,10 @@ class Store:
             "FROM games g", [int(time.time())] * 2)[0]
         s["totals"] = {k: clean(v) for k, v in total.items()}
         this_year = time.gmtime().tm_year
+        s["totals"]["timed"] = 0
+        s["ttb_buckets"], s["ttb_by_genre"], s["ttb_by_year"] = [], [], []
+        if self.has_ttb:
+            self._ttb_stats(s, this_year)
         s["per_year"] = self.rows(
             f"SELECT {self.YEAR} AS label, count(*) AS value FROM games g "
             f"WHERE g.first_release_date IS NOT NULL GROUP BY 1 HAVING label BETWEEN 1970 AND {this_year} ORDER BY 1")
@@ -257,6 +308,30 @@ class Store:
             top = sorted(facets, key=lambda r: -r["n"])[:15]
             s[f"top_{key}"] = [{"label": r["name"], "value": r["n"]} for r in top]
         return s
+
+    def _ttb_stats(self, s, this_year):
+        """Time-to-beat charts: only games whose normal-playthrough figure has MIN_REPORTS+ reports."""
+        base = (f"FROM games g {self.ttb_join()} "
+                f"WHERE tb.normally IS NOT NULL AND tb.reports >= {MIN_REPORTS}")
+        s["totals"]["timed"] = self.rows(f"SELECT count(*) AS n {base}")[0]["n"]
+        if not s["totals"]["timed"]:
+            return
+        edges = [2, 5, 10, 20, 40, 80]
+        labels = ["Under 2 h", "2–5 h", "5–10 h", "10–20 h", "20–40 h", "40–80 h", "80+ h"]
+        case = " ".join(f"WHEN tb.normally < {e * 3600} THEN {i}" for i, e in enumerate(edges))
+        counts = {r["b"]: r["n"] for r in self.rows(
+            f"SELECT CASE {case} ELSE {len(edges)} END AS b, count(*) AS n {base} GROUP BY b")}
+        s["ttb_buckets"] = [{"label": lab, "value": counts.get(i, 0)} for i, lab in enumerate(labels)]
+        if "genres" in self.tables and "genres" in self.game_cols:
+            s["ttb_by_genre"] = self.rows(
+                f"SELECT ge.name AS label, round(median(x.h), 1) AS value, count(*) AS n FROM ("
+                f"SELECT unnest(g.genres) AS gid, tb.normally / 3600.0 AS h {base}) x "
+                f"JOIN genres ge ON ge.id = x.gid GROUP BY ge.name HAVING count(*) >= {MIN_GENRE_GAMES} "
+                f"ORDER BY value DESC, label LIMIT 15")
+        s["ttb_by_year"] = self.rows(
+            f"SELECT {self.YEAR} AS label, round(median(tb.normally / 3600.0), 1) AS value, count(*) AS n "
+            f"{base} AND g.first_release_date IS NOT NULL GROUP BY 1 "
+            f"HAVING count(*) >= {MIN_YEAR_GAMES} AND label BETWEEN 1985 AND {this_year} ORDER BY 1")
 
     def _cached(self, key, fn):
         with self._lock:

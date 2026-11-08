@@ -47,6 +47,10 @@
       rel: ints(d.rel, NULL),
       rating: ints(d.rating, -1),     // hundredths of a point, so 68.62 is stored as 6862
       votes: ints(d.votes, -1),
+      // Time to beat: tenths of an hour (12.5 h is 125) and the number of reports behind it. Data
+      // built before this existed has neither column; treat that as "no time-to-beat data".
+      ttb: d.ttb ? ints(d.ttb, -1) : new Int32Array(d.id.length).fill(-1),
+      ttbn: d.ttbn ? ints(d.ttbn, -1) : new Int32Array(d.id.length).fill(-1),
       cover: d.cover,
       genres: d.genres,
       platforms: d.platforms,
@@ -64,6 +68,7 @@
       rating: G.rating[i] < 0 ? null : G.rating[i] / 100,
       votes: G.votes[i] < 0 ? null : G.votes[i],
       cover: G.cover[i] || null,
+      ttb: G.ttb[i] < 0 ? null : G.ttb[i] / 10,
     };
   }
 
@@ -77,8 +82,14 @@
       if (x === NULL || y === NULL) return x === y ? a - b : (x === NULL ? 1 : -1);
       return x - y || a - b;
     };
+    const shortest = (a, b) => {                                      // nulls last
+      const x = G.ttb[a], y = G.ttb[b];
+      if (x < 0 || y < 0) return x === y ? a - b : (x < 0 ? 1 : -1);
+      return x - y || a - b;
+    };
     const cmp = {
       popular: desc(G.votes), rating: desc(G.rating), newest: desc(G.rel), oldest,
+      shortest, longest: desc(G.ttb),
       name: (a, b) => (G.name[a] < G.name[b] ? -1 : G.name[a] > G.name[b] ? 1 : a - b),
     }[sort];
     return (G.orders[sort] = idx.sort(cmp));
@@ -91,7 +102,10 @@
     const platform = /^\d+$/.test(p.platform || "") ? +p.platform : null;
     const from = /^-?\d{1,4}$/.test(p.from || "") ? +p.from : null;
     const to = /^-?\d{1,4}$/.test(p.to || "") ? +p.to : null;
-    const sort = ["popular", "rating", "newest", "oldest", "name"].includes(p.sort) ? p.sort : "popular";
+    const sort = ["popular", "rating", "newest", "oldest", "name", "shortest", "longest"].includes(p.sort) ? p.sort : "popular";
+    const len = /^(\d{1,3})-(\d{0,3})$/.exec(p.length || "");     // hours, e.g. "10-20" or "40-"
+    const lenMin = len ? +len[1] * 10 : null, lenMax = len && len[2] ? +len[2] * 10 : null;
+    const MIN_REPORTS = 3;
     const minVotes = /^\d+$/.test(p.min_votes || "") ? +p.min_votes : (sort === "rating" ? 10 : 0);
     const today = Math.floor(Date.now() / 86400000);
     const page = /^\d+$/.test(p.page || "") ? Math.max(1, +p.page) : 1;
@@ -109,6 +123,8 @@
       if (to !== null && (G.year[i] === NULL || G.year[i] > to)) continue;
       if (sort === "newest" && (G.rel[i] === NULL || G.rel[i] > today)) continue;
       if (minVotes && G.votes[i] < minVotes) continue;
+      if (len && (G.ttb[i] < 0 || G.ttb[i] < lenMin || (lenMax !== null && G.ttb[i] >= lenMax))) continue;
+      if ((sort === "shortest" || sort === "longest") && (G.ttb[i] < 0 || G.ttbn[i] < MIN_REPORTS)) continue;
       if (total >= start && total < end) out.push(cardAt(G, i));
       total++;
     }
@@ -138,7 +154,7 @@
       id, name: G.name[i], slug: null, summary: null, storyline: null, release: null, rating: null,
       votes: null, user_rating: null, critic_rating: null, url: null,
       genres: [], genre_ids: [], platforms: [], platform_ids: [], themes: [], modes: [], perspectives: [],
-      screenshots: [], developers: [], publishers: [],
+      screenshots: [], developers: [], publishers: [], time_to_beat: null,
       ...d, cover: G.cover[i] || null, similar,
     };
   }

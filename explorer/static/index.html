@@ -139,6 +139,12 @@
     background: linear-gradient(90deg, var(--star) var(--p), var(--surface-2) var(--p));
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
+  .ttb { margin: 14px 0; }
+  .ttb-row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .ttb-item { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 14px; min-width: 110px; }
+  .ttb-item .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .ttb-item .k { color: var(--muted); font-size: 12px; }
+  .ttb-note { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
   .summary { max-width: 70ch; color: var(--text-2); white-space: pre-line; }
   dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 16px 0; font-size: 14px; }
   dl.facts dt { color: var(--muted); }
@@ -153,7 +159,7 @@
   .tile { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
   .tile .v { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .tile .k { color: var(--muted); font-size: 13px; }
-  .charts { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  .charts { display: grid; gap: 16px; align-items: start; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
   .chart-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px 10px; min-width: 0; }
   .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .chart-head button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; text-decoration: underline; }
@@ -255,16 +261,25 @@ function cover(imageId, name, size) {
   return box;
 }
 
+/* 12.5 -> "12.5 h", 0.4 -> "24 min" */
+function hoursText(h) {
+  if (h == null) return "";
+  if (h < 1) return Math.max(1, Math.round(h * 60)) + " min";
+  return (h < 10 ? String(Math.round(h * 10) / 10) : String(Math.round(h))) + " h";
+}
+
 function card(g) {
   return h("a", { class: "card", href: `#/game/${g.id}`, "aria-label": g.name },
     cover(g.cover, g.name, "t_cover_big"),
     g.rating != null && h("span", { class: "badge", text: (g.rating / 20).toFixed(1) }),
-    h("div", { class: "overlay" }, h("b", { text: g.name }), h("small", { text: g.year ?? "" })));
+    h("div", { class: "overlay" }, h("b", { text: g.name }), h("small", { text: [g.year, g.ttb != null && hoursText(g.ttb)].filter(x => x != null && x !== false && x !== "").join(" · ") })));
 }
 
 /* ---------- state / routing ---------- */
 let facets = { genres: [], platforms: [] };
 const SORTS = [["popular", "Most rated"], ["rating", "Highest rated"], ["newest", "Newest"], ["oldest", "Oldest"], ["name", "A–Z"]];
+const LENGTH_SORTS = [["shortest", "Shortest to beat"], ["longest", "Longest to beat"]];
+const LENGTHS = [["", "Any length"], ["0-5", "Under 5 h"], ["5-10", "5–10 h"], ["10-20", "10–20 h"], ["20-40", "20–40 h"], ["40-", "40 h or more"]];
 
 function parseHash() {
   const raw = location.hash.slice(1) || "/";
@@ -317,7 +332,8 @@ async function browsePage(params) {
     select("Genre", "genre", [["", "All genres"], ...facets.genres.map(g => [g.id, g.name])]),
     select("Platform", "platform", [["", "All platforms"], ...facets.platforms.map(p => [p.id, `${p.name} (${fmt(p.n)})`])]),
     year("From year", "from"), year("To year", "to"),
-    select("Sort", "sort", SORTS),
+    facets.has_time_to_beat && select("Time to beat", "length", LENGTHS),
+    select("Sort", "sort", facets.has_time_to_beat ? [...SORTS, ...LENGTH_SORTS] : SORTS),
     h("button", { type: "button", text: "Reset", onclick: () => go("/", {}) }));
 
   const countEl = h("p", { class: "count", text: "Loading…" });
@@ -339,6 +355,14 @@ async function browsePage(params) {
 }
 
 /* ---------- game page ---------- */
+function timeToBeat(t) {
+  const items = [["Rushed", t.hastily], ["Normal", t.normally], ["Completionist", t.completely]]
+    .filter(([, sec]) => sec != null);
+  return h("div", { class: "ttb" },
+    h("div", { class: "ttb-row" }, items.map(([k, sec]) =>
+      h("div", { class: "ttb-item" }, h("div", { class: "v", text: hoursText(sec / 3600) }), h("div", { class: "k", text: k })))),
+    t.count != null && h("p", { class: "ttb-note", text: `Time to beat, from ${fmt(t.count)} player report${t.count === 1 ? "" : "s"}` }));
+}
 async function gamePage(id) {
   const g = await api(`api/game/${encodeURIComponent(id)}`);
   document.title = `${g.name} · VideoGameData Explorer`;
@@ -363,6 +387,7 @@ async function gamePage(id) {
               h("span", { class: "stars", style: `--p:${pct}%`, "aria-label": `${(pct / 20).toFixed(1)} out of 5`, text: "★★★★★" }),
               h("span", { class: "muted", text: `${fmt(g.votes)} ratings` }))
           : h("p", { class: "muted", text: "No rating yet." }),
+        g.time_to_beat && timeToBeat(g.time_to_beat),
         chips(g.genres.map((n, i) => [n, g.genre_ids[i]]), ([n, gid]) => h("a", { class: "chip", href: `#/?genre=${gid}`, text: n })),
         chips(g.platforms.map((n, i) => [n, g.platform_ids[i]]), ([n, pid]) => h("a", { class: "chip", href: `#/?platform=${pid}`, text: n })),
         g.summary && h("p", { class: "summary", text: g.summary }),
@@ -396,6 +421,8 @@ function tipAtElement(el, value, label) {
   const r = el.getBoundingClientRect();
   showTip({ clientX: r.left + r.width / 2, clientY: r.top }, value, label);
 }
+
+const nOf = r => (r.n != null ? ` · ${fmt(r.n)} games` : "");   // sample size, for rows that carry one
 
 function niceStep(raw) {
   const p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
@@ -435,9 +462,9 @@ function drawChart(host, rows, opts) {
       const g = s("g", { class: "band", tabindex: 0, "aria-label": `${labelOf(r)}: ${fmt(r.value)} ${unit}` });
       g.append(s("path", { class: "mark", d: roundTop(cx - bw / 2, y(r.value), bw, bh, 4) }));
       g.append(s("rect", { class: "hit", x: cx - band / 2, y: m.t, width: band, height: ih }));
-      g.addEventListener("pointermove", e => showTip(e, fmt(r.value), `${labelOf(r)} · ${unit}`));
+      g.addEventListener("pointermove", e => showTip(e, fmt(r.value), `${labelOf(r)} · ${unit}${nOf(r)}`));
       g.addEventListener("pointerleave", hideTip);
-      g.addEventListener("focus", () => tipAtElement(g, fmt(r.value), `${labelOf(r)} · ${unit}`));
+      g.addEventListener("focus", () => tipAtElement(g, fmt(r.value), `${labelOf(r)} · ${unit}${nOf(r)}`));
       g.addEventListener("blur", hideTip);
       svg.append(g);
       if (i % every === 0 || i === rows.length - 1 && every === 1)
@@ -457,9 +484,9 @@ function drawChart(host, rows, opts) {
       g.append(s("path", { class: "mark", d: roundRight(lw, yy + (rowH - bh) / 2, w, bh, 4) }));
       g.append(s("text", { class: "strong", x: lw + w + 6, y: yy + rowH / 2 + 4, text: fmt(r.value) }));
       g.append(s("rect", { class: "hit", x: 0, y: yy, width: W, height: rowH }));
-      g.addEventListener("pointermove", e => showTip(e, fmt(r.value), `${r.label} · ${unit}`));
+      g.addEventListener("pointermove", e => showTip(e, fmt(r.value), `${r.label} · ${unit}${nOf(r)}`));
       g.addEventListener("pointerleave", hideTip);
-      g.addEventListener("focus", () => tipAtElement(g, fmt(r.value), `${r.label} · ${unit}`));
+      g.addEventListener("focus", () => tipAtElement(g, fmt(r.value), `${r.label} · ${unit}${nOf(r)}`));
       g.addEventListener("blur", hideTip);
       svg.append(g);
     });
@@ -470,8 +497,8 @@ function drawChart(host, rows, opts) {
 function chartCard(title, sub, rows, opts) {
   const host = h("div", { class: "chart" });
   const table = h("div", { class: "table-wrap", hidden: true },
-    h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: opts.axis || "Item" }), h("th", { text: opts.unit || "games" }))),
-      h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: (opts.labelOf || (x => x.label))(r) }), h("td", { text: fmt(r.value) }))))));
+    h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: opts.axis || "Item" }), rows.some(r => r.n != null) && h("th", { text: "games" }), h("th", { text: opts.unit || "games" }))),
+      h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: (opts.labelOf || (x => x.label))(r) }), rows.some(x => x.n != null) && h("td", { text: fmt(r.n) }), h("td", { text: fmt(r.value) }))))));
   const toggle = h("button", { type: "button", text: "View as table", onclick: () => {
     const showTable = table.hidden;
     table.hidden = !showTable; host.hidden = showTable;
@@ -499,6 +526,14 @@ async function statsPage() {
       { axis: "Score range", unit: "games", labelGap: 34, labelOf: r => `${r.label}–${r.label + 9}` }),
     chartCard("Top genres", "Games per genre (a game can have several)", st.top_genres, { horizontal: true, axis: "Genre", unit: "games" }),
     chartCard("Top platforms", "Games per platform (a game can be on several)", st.top_platforms, { horizontal: true, axis: "Platform", unit: "games" }),
+    ...(st.ttb_buckets && st.ttb_buckets.length ? [
+      chartCard("How long games take to beat", "Normal playthrough, games with at least 3 player reports", st.ttb_buckets,
+        { axis: "Time to beat", unit: "games", labelGap: 64 }),
+      chartCard("Median time to beat, by genre", "Hours for a normal playthrough; genres with 30+ timed games (a game can have several genres)",
+        st.ttb_by_genre, { horizontal: true, axis: "Genre", unit: "median hours" }),
+      chartCard("Median time to beat, by release year", "Hours for a normal playthrough; years with 20+ timed games",
+        st.ttb_by_year, { axis: "Year", unit: "median hours" }),
+    ] : []),
   ];
   app.replaceChildren(
     h("h1", { text: "Stats" }),
@@ -506,6 +541,7 @@ async function statsPage() {
       tile(fmt(t.games), "games in the dump"),
       tile(fmt(t.rated), "with a rating" + pctOf(t.rated, t.games)),
       tile(fmt(t.covered), "with cover art" + pctOf(t.covered, t.games)),
+      t.timed ? tile(fmt(t.timed), "with time to beat" + pctOf(t.timed, t.games)) : null,
       tile(t.first_year != null ? `${t.first_year}–${t.last_year}` : "–", "release years covered")),
     h("div", { class: "charts" }, cards));
   cards.forEach(c => c.redraw());
