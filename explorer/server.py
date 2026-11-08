@@ -7,6 +7,9 @@ browser UI: a cover grid with search and filters, a page per game, and a stats
 page with a few charts. Everything runs on your machine; the only outside
 requests are your browser loading cover art from images.igdb.com.
 
+It is a standard WSGI app (see `App` below and passenger_wsgi.py), so it can also run behind
+a web server under a path such as /games. See DEPLOY.md.
+
 Usage (from the repo folder):
   python explorer/server.py                # opens http://127.0.0.1:8000
   python explorer/server.py --port 9000 --no-open
@@ -19,14 +22,16 @@ but not while load_duckdb.py is rebuilding it.
 import argparse
 import json
 import math
+import os
 import re
 import sys
 import threading
 import time
 import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from socketserver import ThreadingMixIn
+from urllib.parse import parse_qs
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 import duckdb
 
@@ -62,7 +67,15 @@ def as_int_list(v):
 
 class Store:
     def __init__(self, path):
-        self.con = duckdb.connect(str(path), read_only=True)
+        # Optional limits for small servers, e.g. DUCKDB_MEMORY_LIMIT=512MB DUCKDB_THREADS=1
+        config = {k: v for k, v in (("memory_limit", os.environ.get("DUCKDB_MEMORY_LIMIT")),
+                                    ("threads", os.environ.get("DUCKDB_THREADS"))) if v}
+        # An in-memory connection with the file ATTACHed read-only (rather than connecting to the
+        # file directly): DuckDB reuses an already-open database for the same path, which would keep
+        # serving the OLD file after a rebuild swaps in a new one.
+        self.con = duckdb.connect(":memory:", config=config)
+        self.con.execute("ATTACH '" + str(path).replace("'", "''") + "' AS igdb (READ_ONLY)")
+        self.con.execute("USE igdb")
         self.tables = {r[0] for r in self.con.execute("SHOW TABLES").fetchall()}
         if "games" not in self.tables:
             sys.exit(f"{path} has no 'games' table. Did the download include it?")
@@ -73,6 +86,7 @@ class Store:
     # -- helpers -----------------------------------------------------------
     def rows(self, sql, params=()):
         cur = self.con.cursor()  # one cursor per call keeps threads independent
+        cur.execute("USE igdb")   # the default catalog is per connection
         res = cur.execute(sql, list(params))
         names = [d[0] for d in res.description]
         return [dict(zip(names, r)) for r in res.fetchall()]
@@ -247,50 +261,86 @@ class Store:
             return self._cache[key]
 
 
-def make_handler(store):
-    index = HERE / "static" / "index.html"
+SECURITY_HEADERS = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+    ("Content-Security-Policy",
+     "default-src 'self'; img-src 'self' https://images.igdb.com data:; "
+     "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+     "connect-src 'self'; base-uri 'self'; frame-ancestors 'self'"),
+]
 
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):
-            if "--verbose" in sys.argv:
-                super().log_message(fmt, *args)
 
-        def send_body(self, code, body, ctype):
-            data = body if isinstance(body, bytes) else body.encode()
-            self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
+class App:
+    """WSGI application. Re-opens the database by itself when the file is replaced,
+    so a daily rebuild (load_duckdb.py swaps the file in atomically) needs no restart."""
 
-        def send_json(self, obj, code=200):
-            self.send_body(code, json.dumps(obj, default=str), "application/json; charset=utf-8")
+    def __init__(self, db_path):
+        self.db_path = Path(db_path)
+        self.index = HERE / "static" / "index.html"
+        self._store, self._sig = None, None
+        self._lock = threading.Lock()
 
-        def do_GET(self):
-            url = urlparse(self.path)
-            q = parse_qs(url.query)
+    def store(self):
+        st = os.stat(self.db_path)
+        sig = (st.st_ino, st.st_mtime_ns, st.st_size)
+        with self._lock:
+            if sig != self._sig:
+                self._store, self._sig = Store(self.db_path), sig
+            return self._store
+
+    @staticmethod
+    def reply(start_response, code, body, ctype, extra=()):
+        data = body if isinstance(body, bytes) else body.encode()
+        reasons = {200: "OK", 204: "No Content", 301: "Moved Permanently", 404: "Not Found",
+                   500: "Internal Server Error", 503: "Service Unavailable"}
+        start_response(f"{code} {reasons.get(code, 'OK')}", [
+            ("Content-Type", ctype), ("Content-Length", str(len(data))), *SECURITY_HEADERS, *extra])
+        return [data]
+
+    def json(self, start_response, obj, code=200, cache=300):
+        cc = f"public, max-age={cache}" if code == 200 and cache else "no-store"
+        return self.reply(start_response, code, json.dumps(obj, default=str),
+                          "application/json; charset=utf-8", [("Cache-Control", cc)])
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO") or ""
+        script = (environ.get("SCRIPT_NAME") or "").rstrip("/")
+        q = parse_qs(environ.get("QUERY_STRING", ""))
+        try:
+            if path in ("", "/", "/index.html"):
+                if path == "" and script:      # /games  ->  /games/  (relative URLs need the slash)
+                    return self.reply(start_response, 301, b"", "text/plain", [("Location", script + "/")])
+                html = self.index.read_text(encoding="utf-8").replace("__BASE__", script + "/")
+                return self.reply(start_response, 200, html, "text/html; charset=utf-8",
+                                  [("Cache-Control", "no-cache")])
+            if path == "/favicon.ico":
+                return self.reply(start_response, 204, b"", "image/x-icon")
+            if not path.startswith("/api/"):
+                return self.json(start_response, {"error": "not found"}, 404)
             try:
-                if url.path in ("/", "/index.html"):
-                    return self.send_body(200, index.read_bytes(), "text/html; charset=utf-8")
-                if url.path == "/favicon.ico":
-                    return self.send_body(204, b"", "image/x-icon")
-                if url.path == "/api/games":
-                    return self.send_json(store.search(q))
-                if url.path == "/api/facets":
-                    return self.send_json(store.facets())
-                if url.path == "/api/stats":
-                    return self.send_json(store.stats())
-                m = re.fullmatch(r"/api/game/(\d+)", url.path)
-                if m:
-                    game = store.game(int(m.group(1)))
-                    return self.send_json(game) if game else self.send_json({"error": "not found"}, 404)
-                self.send_json({"error": "not found"}, 404)
-            except Exception as e:  # keep the server alive; show the cause in the UI
-                print(f"error handling {self.path}: {e!r}", file=sys.stderr)
-                self.send_json({"error": str(e)}, 500)
+                store = self.store()
+            except (FileNotFoundError, duckdb.Error):
+                return self.json(start_response, {"error": "The database is not available yet. "
+                                                  "Try again in a minute."}, 503)
+            if path == "/api/games":
+                return self.json(start_response, store.search(q))
+            if path == "/api/facets":
+                return self.json(start_response, store.facets(), cache=3600)
+            if path == "/api/stats":
+                return self.json(start_response, store.stats(), cache=3600)
+            m = re.fullmatch(r"/api/game/(\d+)", path)
+            if m:
+                game = store.game(int(m.group(1)))
+                return self.json(start_response, game) if game else self.json(start_response, {"error": "not found"}, 404)
+            return self.json(start_response, {"error": "not found"}, 404)
+        except Exception as e:  # keep serving; the UI shows the message
+            print(f"error handling {path}: {e!r}", file=sys.stderr)
+            return self.json(start_response, {"error": str(e)}, 500)
 
-    return Handler
+
+class ThreadedServer(ThreadingMixIn, WSGIServer):
+    daemon_threads = True
 
 
 def main():
@@ -305,8 +355,15 @@ def main():
 
     if not Path(args.db).exists():
         sys.exit(f"{args.db} not found. Run `python load_duckdb.py` first (after fetch_igdb.py).")
-    store = Store(args.db)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(store))
+    app = App(args.db)
+    app.store()   # fail fast if the file is not a usable database
+
+    class Handler(WSGIRequestHandler):
+        def log_message(self, fmt, *a):
+            if args.verbose:
+                super().log_message(fmt, *a)
+
+    server = make_server(args.host, args.port, app, server_class=ThreadedServer, handler_class=Handler)
     url = f"http://{args.host}:{args.port}/"
     print(f"Explorer running at {url}  (Ctrl+C to stop)")
     if not args.no_open:

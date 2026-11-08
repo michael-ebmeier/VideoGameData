@@ -16,6 +16,7 @@ numeric IDs; join them to the matching table, e.g.
 Timestamps such as first_release_date are Unix seconds: use to_timestamp(...).
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -31,8 +32,15 @@ def main():
     if not files:
         sys.exit(f"No .jsonl files in {SRC}. Run fetch_igdb.py first.")
 
-    DB.unlink(missing_ok=True)
-    con = duckdb.connect(str(DB))
+    # Build into a temporary file and swap it in at the end, so a running explorer keeps
+    # serving the old database until the new one is complete (and a failed build leaves it alone).
+    new = DB.with_name(DB.name + ".new")
+    for leftover in (new, new.with_name(new.name + ".wal")):
+        leftover.unlink(missing_ok=True)
+    # Optional limits for small servers, e.g. DUCKDB_MEMORY_LIMIT=1GB DUCKDB_THREADS=1
+    config = {k: v for k, v in (("memory_limit", os.environ.get("DUCKDB_MEMORY_LIMIT")),
+                                ("threads", os.environ.get("DUCKDB_THREADS"))) if v}
+    con = duckdb.connect(str(new), config=config)
     for f in files:
         con.execute(
             f'CREATE TABLE "{f.stem}" AS SELECT * FROM read_json_auto(?, '
@@ -42,6 +50,11 @@ def main():
         n = con.execute(f'SELECT count(*) FROM "{f.stem}"').fetchone()[0]
         print(f"{f.stem:<40} {n:>10,} rows")
     con.close()
+    try:
+        os.replace(new, DB)
+    except PermissionError:
+        sys.exit(f"Built {new} but could not replace {DB}: is the explorer running? "
+                 "Stop it and move the file into place, or re-run this script.")
     print(f"\nWrote {DB}")
 
 

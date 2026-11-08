@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<base href="__BASE__">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VideoGameData Explorer</title>
 <style>
@@ -176,6 +177,8 @@
   .tip b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
   .tip span { color: var(--text-2); }
 
+  footer.foot { max-width: 1200px; margin: 0 auto; padding: 0 16px 28px; color: var(--muted); font-size: 12px; }
+  footer.foot a { text-decoration: underline; }
   @media (max-width: 720px) {
     .game { grid-template-columns: 1fr; }
     .game .cover-lg { max-width: 220px; }
@@ -198,6 +201,7 @@
   </div>
 </header>
 <main id="app"></main>
+<footer class="foot">Game data from <a href="https://www.igdb.com" target="_blank" rel="noopener noreferrer">IGDB.com</a>.</footer>
 <div class="tip" id="tip" role="status"></div>
 
 <script>
@@ -316,7 +320,7 @@ async function browsePage(params) {
   const pager = h("div", { class: "pager" });
   app.replaceChildren(filters, countEl, grid, pager);
 
-  const data = await api("/api/games", cur);
+  const data = await api("api/games", cur);
   const pages = Math.max(1, Math.ceil(data.total / data.page_size));
   countEl.textContent = `${fmt(data.total)} games` + (cur.q ? ` matching “${cur.q}”` : "");
   grid.classList.remove("loading");
@@ -331,7 +335,7 @@ async function browsePage(params) {
 
 /* ---------- game page ---------- */
 async function gamePage(id) {
-  const g = await api(`/api/game/${encodeURIComponent(id)}`);
+  const g = await api(`api/game/${encodeURIComponent(id)}`);
   document.title = `${g.name} · VideoGameData Explorer`;
   const date = g.release != null ? new Date(g.release * 1000) : null;
   const year = date ? date.getUTCFullYear() : null;
@@ -480,7 +484,7 @@ function chartCard(title, sub, rows, opts) {
 
 async function statsPage() {
   document.title = "Stats · VideoGameData Explorer";
-  const st = await api("/api/stats");
+  const st = await api("api/stats");
   const t = st.totals;
   const pctOf = (a, b) => b ? ` (${Math.round(100 * a / b)}%)` : "";
   const tile = (v, k) => h("div", { class: "tile" }, h("div", { class: "v", text: v }), h("div", { class: "k", text: k }));
@@ -509,7 +513,7 @@ window.addEventListener("resize", () => {
 
 /* ---------- start ---------- */
 (async () => {
-  try { facets = await api("/api/facets"); } catch (e) { /* the page itself will show the error */ }
+  try { facets = await api("api/facets"); } catch (e) { /* the page itself will show the error */ }
   route();
 })();
 </script>

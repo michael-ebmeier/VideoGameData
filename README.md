@@ -90,6 +90,12 @@ otherwise you get title placeholders. Options: `--port 9000`, `--no-open`, `--db
 
 Stop the server with Ctrl+C. Rebuild the database (`load_duckdb.py`) only while it is stopped.
 
+## Putting it on a website
+
+`DEPLOY.md` walks through hosting the explorer at a path like `yoursite.com/games` on cPanel
+shared hosting, with a daily cron job that refreshes every endpoint. It also covers a VPS and
+"build elsewhere, upload the database" alternatives.
+
 ## Terms
 
 IGDB data is free for non-commercial use under Twitch's terms. Check
