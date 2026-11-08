@@ -8,7 +8,7 @@ to .env, which is gitignored. Get a secret at https://dev.twitch.tv/console/apps
 from getpass import getpass
 from pathlib import Path
 
-CLIENT_ID = "gtsmvsqf87p5m4l880e4i7r7cnyabw"
+CLIENT_ID = "xq3lbm20pbz61b0uv7vtr00156kqaf"
 
 secret = getpass("Paste your Twitch Client Secret (input is hidden): ").strip()
 if not secret:
