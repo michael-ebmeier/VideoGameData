@@ -203,16 +203,25 @@
     const rows = list(rowKey).slice(0, 12), cols = list(colKey).slice(0, 12);
     const rowAt = new Map(rows.map((r, i) => [r.id, i])), colAt = new Map(cols.map((c, j) => [c.id, j]));
     const cells = rows.map(() => new Array(cols.length).fill(0));
+    const rowN = new Array(rows.length).fill(0), colN = new Array(cols.length).fill(0);
     const rl = rowKey === "genre" ? G.genres : G.platforms, cl = colKey === "genre" ? G.genres : G.platforms;
     const skip = scoped && G.rated ? G.rated : null;
+    let total = 0;                                           // games in scope
     for (let i = 0; i < G.n; i++) {
       if (skip && !skip[i]) continue;
-      for (const a of rl[i]) { const r = rowAt.get(a); if (r === undefined) continue;
-        for (const b of cl[i]) { const c = colAt.get(b); if (c !== undefined) cells[r][c]++; } }
+      total++;
+      for (const b of cl[i]) { const c = colAt.get(b); if (c !== undefined) colN[c]++; }
+      for (const a of rl[i]) {
+        const r = rowAt.get(a); if (r === undefined) continue;
+        rowN[r]++;
+        for (const b of cl[i]) { const c = colAt.get(b); if (c !== undefined) cells[r][c]++; }
+      }
     }
-    const rowTotal = rows.map(r => r.n);
-    return { type: "grid", rowKey, colKey, show, rows, cols, cells, rowTotal,
-             pct: cells.map((line, r) => line.map(v => (rowTotal[r] ? (100 * v) / rowTotal[r] : 0))) };
+    // share of a row's games that have the column's category, the share of ALL games that have it, and the ratio
+    const pct = cells.map((line, r) => line.map(v => (rowN[r] ? (100 * v) / rowN[r] : 0)));
+    const base = colN.map(n => (total ? (100 * n) / total : 0));
+    const lift = pct.map(line => line.map((v, c) => (base[c] > 0 ? v / base[c] : null)));
+    return { type: "grid", rowKey, colKey, show, rows, cols, cells, rowTotal: rowN, colTotal: colN, total, pct, base, lift };
   }
 
   /* Every pair among the chosen measures: the correlation matrix. */

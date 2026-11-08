@@ -31,8 +31,8 @@
     --accent-ink: #ffffff;
     --star: #f2b705;
     --radius: 8px;
-    /* heatmap ramp (one hue; low to high). In dark mode it flips so that MORE is lighter. */
-    --seq-1: #0d366b; --seq-2: #104281; --seq-3: #184f95; --seq-4: #256abf; --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #cde2fb;
+    /* counts ramp, low to high: indigo -> blue -> teal -> green -> yellow. Dark mode: MORE is brighter. */
+    --seq-1: #27307f; --seq-2: #2a539f; --seq-3: #2a7aae; --seq-4: #2fa3a6; --seq-5: #73c2a6; --seq-6: #b3dcab; --seq-7: #f7f0b8;
     /* diverging pair for correlations: red (negative) <-> neutral <-> blue (positive), four equal steps per arm */
     --div-neg-4: #e66767; --div-neg-3: #b85d5a; --div-neg-2: #8c524e; --div-neg-1: #624541; --div-0: #383835;
     --div-pos-1: #3c4c5e; --div-pos-2: #3e6089; --div-pos-3: #3d73b6; --div-pos-4: #3987e5;
@@ -48,7 +48,7 @@
       --text-2: #3f4852;
       --muted: #5b6670;
       --accent: #2a78d6;    /* single data series colour (light step) */
-      --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #6da7ec; --seq-4: #3987e5; --seq-5: #256abf; --seq-6: #184f95; --seq-7: #0d366b;
+      --seq-1: #f7f0b8; --seq-2: #b3dcab; --seq-3: #73c2a6; --seq-4: #2fa3a6; --seq-5: #2a7aae; --seq-6: #2a539f; --seq-7: #27307f;
       --div-neg-4: #e34948; --div-neg-3: #ec7971; --div-neg-2: #f1a299; --div-neg-1: #f3c9c2; --div-0: #f0efec;
       --div-pos-1: #c0d2e9; --div-pos-2: #90b5e4; --div-pos-3: #6097de; --div-pos-4: #2a78d6;
     }
@@ -186,6 +186,7 @@
   .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .chart-head button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; text-decoration: underline; }
   .chart-sub { color: var(--muted); font-size: 12px; margin: 2px 0 6px; }
+  .chart { overflow-x: auto; }
   .chart svg { display: block; width: 100%; overflow: visible; }
   .chart .grid-line { stroke: var(--line); stroke-width: 1; }
   .chart text { fill: var(--muted); font-size: 11px; }
@@ -680,7 +681,7 @@ const PRESETS = [
   ["Do longer games rate higher?", "ttb", "rating"], ["Are newer games rated higher?", "year", "rating"],
   ["Does popularity track quality?", "votes", "rating"], ["Are games getting longer?", "year", "ttb"],
   ["Which genres rate best?", "genre", "rating"], ["Which genres take longest?", "genre", "ttb"],
-  ["Genre mix by platform", "platform", "genre"], ["Which genres go together?", "genre", "genre"],
+  ["Genre mix by platform", "genre", "platform"], ["Which genres go together?", "genre", "genre"],
 ];
 const MIN_PAIR_N = 30;
 const aopts = state => ({ scoped: scoped(), trim: state.trim });        // scope + trim, as the analysis wants them
@@ -718,8 +719,16 @@ function divVar(r) {
   return step === 0 ? "--div-0" : `--div-${r > 0 ? "pos" : "neg"}-${step}`;
 }
 const MINUS = "−";
+const fmtPct = v => (v >= 9.95 ? String(Math.round(v)) : v >= 0.05 ? v.toFixed(1) : v === 0 ? "0" : "<0.1") + "%";
+/* a share compared with the all-games share: neutral near 1x, blue above, red below, four steps each way (log scale) */
+function liftVar(l) {
+  if (l == null) return "--div-0";
+  const x = Math.log2(Math.max(l, 1e-6)), a = Math.abs(x), step = a < 0.15 ? 0 : a < 0.4 ? 1 : a < 0.8 ? 2 : a < 1.3 ? 3 : 4;
+  return step === 0 ? "--div-0" : `--div-${x > 0 ? "pos" : "neg"}-${step}`;
+}
 const signed = v => (v < 0 ? MINUS : "") + Math.abs(v).toFixed(2);
-const compact = n => (n >= 1e6 ? n / 1e6 + "M" : n >= 1e3 ? n / 1e3 + "K" : String(n));
+const compact = n => (n >= 1e6 ? +(n / 1e6).toFixed(1) + "M" : n >= 1e3 ? +(n / 1e3).toFixed(1) + "K" : String(n));
+const cellCount = n => (n >= 100000 ? compact(n) : fmt(n));
 
 function fmtVal(key, v) {
   return key === "ttb" ? hoursText(v) : key === "rating" ? v.toFixed(1) : key === "votes" ? fmt(Math.round(v)) : String(Math.round(v * 10) / 10);
@@ -798,36 +807,46 @@ function drawDiffBars(host, rows, o) {
 
 /* A grid of coloured cells with row/column labels (used by the correlation matrix and the category grid). */
 function drawGrid(host, g) {
-  const W = Math.max(300, host.clientWidth), rowW = Math.min(170, Math.max(92, W * 0.26));
   const nC = g.cols.length, nR = g.rows.length;
-  const cellW = Math.max(30, Math.min(110, (W - rowW - 8) / nC)), cellH = Math.max(26, Math.min(40, cellW * 0.62));
-  const topH = g.rotate ? 100 : 28, VW = rowW + cellW * nC + 8, VH = topH + cellH * nR + 6;
-  const svg = s("svg", { viewBox: `0 0 ${VW} ${VH}`, height: Math.min(VH, 560), role: "img", "aria-label": g.aria || "grid" });
+  const W = Math.max(96 + 44 * nC + 8, host.clientWidth), rowW = Math.min(180, Math.max(96, W * 0.24));   // never narrower than 44px a column: scroll instead
+  const noteW = g.rowNotes && host.clientWidth >= 680 ? 104 : 0;
+  const cellW = Math.max(44, Math.min(110, (W - rowW - noteW - 8) / nC)), cellH = Math.max(28, Math.min(44, cellW * 0.6));
+  const topH = g.rotate ? 104 : 28, footGap = g.footer ? 10 : 0, footH = g.footer ? Math.round(cellH * 0.86) : 0;
+  const VW = rowW + cellW * nC + noteW + 8, VH = topH + cellH * nR + footGap + footH + 6;
+  const svg = s("svg", { viewBox: `0 0 ${VW} ${VH}`, height: Math.min(VH, 640), role: "img", "aria-label": g.aria || "grid", style: `min-width:${VW}px` });
   const clip = (t, n) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
+  if (g.corner) svg.append(s("text", { class: "axis-title", x: rowW - 8, y: topH - 8, "text-anchor": "end", text: g.corner }));
   g.cols.forEach((c, j) => {
     const x = rowW + j * cellW + cellW / 2;
     svg.append(g.rotate
-      ? s("text", { x, y: topH - 8, transform: `rotate(-40 ${x} ${topH - 8})`, "text-anchor": "start", text: clip(c, 20) })
+      ? s("text", { x: x - 4, y: topH - 8, transform: `rotate(-40 ${x - 4} ${topH - 8})`, "text-anchor": "start", text: clip(c, 22) })
       : s("text", { x, y: topH - 8, "text-anchor": "middle", text: clip(c, Math.floor(cellW / 6)) }));
   });
+  const drawCell = (c, gx, gy, h2) => {
+    const fill = cssVar(c.fill) || "#888888";
+    const cellG = s("g", { class: "band" + (c.onclick ? " click" : ""), tabindex: 0, role: "img", "aria-label": c.aria || c.text });
+    cellG.append(s("rect", { x: gx + 1, y: gy + 1, width: cellW - 2, height: h2 - 2, rx: 3, style: `fill:var(${c.fill})`, class: "cell" }));
+    cellG.append(s("text", { x: gx + cellW / 2, y: gy + h2 / 2 + 4, "text-anchor": "middle", class: "cell-text", style: `fill:${c.muted ? "var(--muted)" : inkOn(fill)}`, text: c.text }));
+    cellG.append(s("rect", { class: "hit", x: gx, y: gy, width: cellW, height: h2 }));
+    cellG.addEventListener("pointermove", e => showTip(e, c.tip[0], c.tip[1]));
+    cellG.addEventListener("pointerleave", hideTip);
+    cellG.addEventListener("focus", () => tipAtElement(cellG, c.tip[0], c.tip[1]));
+    cellG.addEventListener("blur", hideTip);
+    if (c.onclick) { cellG.addEventListener("click", c.onclick); cellG.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); c.onclick(); } }); }
+    svg.append(cellG);
+  };
   g.rows.forEach((rLabel, i) => {
-    svg.append(s("text", { x: rowW - 8, y: topH + i * cellH + cellH / 2 + 4, "text-anchor": "end", text: clip(rLabel, Math.floor(rowW / 6.2)) }));
-    g.cols.forEach((_, j) => {
-      const c = g.cell(i, j);
-      if (!c) return;
-      const fill = cssVar(c.fill) || "#888888", gx = rowW + j * cellW, gy = topH + i * cellH;
-      const cellG = s("g", { class: "band" + (c.onclick ? " click" : ""), tabindex: 0, role: "img", "aria-label": c.aria || c.text });
-      cellG.append(s("rect", { x: gx + 1, y: gy + 1, width: cellW - 2, height: cellH - 2, rx: 3, style: `fill:var(${c.fill})`, class: "cell" }));
-      cellG.append(s("text", { x: gx + cellW / 2, y: gy + cellH / 2 + 4, "text-anchor": "middle", class: "cell-text", style: `fill:${c.muted ? "var(--muted)" : inkOn(fill)}`, text: c.text }));
-      cellG.append(s("rect", { class: "hit", x: gx, y: gy, width: cellW, height: cellH }));
-      cellG.addEventListener("pointermove", e => showTip(e, c.tip[0], c.tip[1]));
-      cellG.addEventListener("pointerleave", hideTip);
-      cellG.addEventListener("focus", () => tipAtElement(cellG, c.tip[0], c.tip[1]));
-      cellG.addEventListener("blur", hideTip);
-      if (c.onclick) { cellG.addEventListener("click", c.onclick); cellG.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); c.onclick(); } }); }
-      svg.append(cellG);
-    });
+    svg.append(s("text", { x: rowW - 8, y: topH + i * cellH + cellH / 2 + 4, "text-anchor": "end", text: clip(rLabel, Math.floor(rowW / 6.4)) }));
+    if (noteW && g.rowNotes[i]) svg.append(s("text", { x: rowW + cellW * nC + 10, y: topH + i * cellH + cellH / 2 + 4, text: g.rowNotes[i] }));
+    g.cols.forEach((_, j) => { const c = g.cell(i, j); if (c) drawCell(c, rowW + j * cellW, topH + i * cellH, cellH); });
   });
+  if (g.footer) {                                            // the baseline everything is compared with
+    const fy = topH + cellH * nR + footGap;
+    svg.append(s("line", { class: "grid-line", x1: rowW, x2: rowW + cellW * nC, y1: fy - footGap / 2, y2: fy - footGap / 2 }));
+    svg.append(s("text", { class: "strong", x: rowW - 8, y: fy + footH / 2 + 4, "text-anchor": "end", text: g.footer.label }));
+    if (noteW && g.footer.note) svg.append(s("text", { x: rowW + cellW * nC + 10, y: fy + footH / 2 + 4, text: g.footer.note }));
+    g.cols.forEach((_, j) => { const c = g.footer.cell(j); if (c) drawCell(c, rowW + j * cellW, fy, footH); });
+  }
   host.replaceChildren(svg);
 }
 const swatches = (items) => h("div", { class: "legend" }, items.map(([v, label]) => h("span", { class: "lg" }, h("i", { style: `background:var(${v})` }), label)));
@@ -929,7 +948,7 @@ function explorerCard(G, state, onChange) {
   const xSel = mkSelect("x"), ySel = mkSelect("y");
   const aggSel = h("select", { onchange: e => { state.agg = e.target.value; render(); } }, [["mean", "Average (mean)"], ["median", "Median"]].map(([v, t]) => h("option", { value: v, text: t })));
   const viewSel = h("select", { onchange: e => { state.view = e.target.value; render(); } }, [["value", "Values"], ["diff", "Difference from all games"]].map(([v, t]) => h("option", { value: v, text: t })));
-  const showSel = h("select", { onchange: e => { state.show = e.target.value; render(); } }, [["count", "Number of games"], ["pct", "% of each row"]].map(([v, t]) => h("option", { value: v, text: t })));
+  const showSel = h("select", { onchange: e => { state.show = e.target.value; render(); } }, [["pct", "Share of each row's games"], ["count", "Number of games"]].map(([v, t]) => h("option", { value: v, text: t })));
   const aggLabel = h("label", { text: "Statistic" }, aggSel), viewLabel = h("label", { text: "View" }, viewSel), showLabel = h("label", { text: "Show" }, showSel);
   const swap = h("button", { type: "button", text: "⇄ Swap axes", onclick: () => { [state.x, state.y] = [state.y, state.x]; render(); } });
   const presets = h("div", { class: "presets" }, PRESETS.filter(([, a, b]) => axes.some(([k]) => k === a) && axes.some(([k]) => k === b)).map(([t, a, b]) =>
@@ -980,23 +999,47 @@ function explorerCard(G, state, onChange) {
           h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: r.label }), h("td", { text: fmt(r.n) }), h("td", { text: fmtVal(numKey, r.value) }), h("td", { text: signedVal(r.diff, numKey) }))))),
       };
     } else {
-      const res = A.crossTab(G, facets, state.y, state.x, state.show, aopts(state)), pct = state.show === "pct", same = state.x === state.y;
-      const max = Math.max(1, ...res.cells.flat().map((v, k) => (pct ? res.pct[Math.floor(k / res.cols.length)][k % res.cols.length] : v)));
-      note.textContent = same
-        ? `${pct ? "Of the games in each row's genre, the share that also have the column's genre" : "Games that have both genres"}. The diagonal is the genre's own total.`
-        : `${pct ? `Of the games on each row's ${state.y}, the share on the column's ${state.x}` : `Games that have both the row's ${state.y} and the column's ${state.x}`}. Top 12 of each shown.`;
+      const res = A.crossTab(G, facets, state.y, state.x, state.show, aopts(state)), pct = state.show !== "count", same = state.x === state.y;
+      const rowName = state.y, colName = state.x, cap = w => w[0].toUpperCase() + w.slice(1);      // rows are the Y axis, columns the X axis
+      const max = Math.max(1, ...res.cells.flat());
+      const colIs = colName === "genre" ? "are in the column's genre" : "are on the column's platform";
+      const ratio = l => (l == null ? "" : ` (${l >= 10 ? Math.round(l) : l.toFixed(1)}× the average)`);
+      note.textContent = pct
+        ? (same
+          ? `Each cell is the share of the row's ${rowName} games that also ${colName === "genre" ? "have the column's genre" : "are on the column's platform"}; the diagonal is the ${rowName} itself. `
+          : `Each cell is the share of a ${rowName}'s games that ${colIs}. `) +
+          `Color compares it with the same share across all games (bottom row): blue is more common than average, red less. A game can have several ${colName === "genre" ? "genres" : "platforms"}, so a row can add up to more than 100%. Top 12 of each shown.`
+        : `Games that have both the row's ${rowName} and the column's ${colName}. The legend shows how color maps to the number of games. Top 12 of each shown.`;
+      const cellFor = (i, j) => {
+        if (pct && same && i === j) return { fill: "--surface-2", text: "—", muted: true, tip: [res.rows[i].name, "compared with itself"] };
+        const n = res.cells[i][j], v = res.pct[i][j], l = res.lift[i][j];
+        return pct
+          ? { fill: liftVar(l), text: fmtPct(v), aria: `${res.rows[i].name}, ${res.cols[j].name}: ${fmtPct(v)}`,
+              tip: [fmtPct(v), `${res.cols[j].name} is ${fmtPct(v)} of ${res.rows[i].name} games (${fmt(n)} of ${fmt(res.rowTotal[i])}), versus ${fmtPct(res.base[j])} of all games${ratio(l)}`] }
+          : { fill: seqVar(n, max), text: cellCount(n), aria: `${res.rows[i].name}, ${res.cols[j].name}: ${fmt(n)} games`,
+              tip: [fmt(n), `${res.rows[i].name} × ${res.cols[j].name} · games with both`] };
+      };
+      const footFor = j => pct
+        ? { fill: "--surface-2", text: fmtPct(res.base[j]), tip: [fmtPct(res.base[j]), `${res.cols[j].name} is ${fmtPct(res.base[j])} of all ${fmt(res.total)} games`] }
+        : { fill: "--surface-2", text: cellCount(res.colTotal[j]), tip: [fmt(res.colTotal[j]), `all games with ${res.cols[j].name}`] };
       spec = {
         draw: host => drawGrid(host, {
-          rows: res.rows.map(r => r.name), cols: res.cols.map(c => c.name), rotate: true, aria: "Category grid",
-          cell: (i, j) => { const v = pct ? res.pct[i][j] : res.cells[i][j];
-            return { fill: seqVar(v, max, pct), text: pct ? Math.round(v) + "%" : compact(res.cells[i][j]), tip: [pct ? `${v.toFixed(1)}%` : fmt(res.cells[i][j]), `${res.rows[i].name} × ${res.cols[j].name}${pct ? ` · of ${fmt(res.rowTotal[i])} ${res.rows[i].name} games` : " · games"}`] }; } }),
-        table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "" }), res.cols.map(c => h("th", { text: c.name })))),
-          h("tbody", {}, res.rows.map((r, i) => h("tr", {}, h("td", { text: r.name }), res.cols.map((_, j) => h("td", { text: pct ? res.pct[i][j].toFixed(1) + "%" : fmt(res.cells[i][j]) })))))),
-        legend: true, legendMax: pct ? `${Math.round(max)}%` : compact(Math.round(max)),
+          rows: res.rows.map(r => r.name), cols: res.cols.map(c => c.name), rotate: true, aria: `${cap(rowName)} by ${colName}`,
+          corner: `${cap(rowName)} ↓  ·  ${cap(colName)} →`, rowNotes: res.rowTotal.map(n => `${fmt(n)} games`),
+          cell: cellFor, footer: { label: "All games", note: `${fmt(res.total)} games`, cell: footFor } }),
+        table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: cap(rowName) }), res.cols.map(c => h("th", { text: c.name })), h("th", { text: "Games" }))),
+          h("tbody", {}, res.rows.map((r, i) => h("tr", {}, h("td", { text: r.name }), res.cols.map((_, j) => h("td", { text: pct ? `${fmtPct(res.pct[i][j])} (${fmt(res.cells[i][j])})` : fmt(res.cells[i][j]) })), h("td", { text: fmt(res.rowTotal[i]) }))),
+            h("tr", {}, h("td", { text: "All games" }), res.cols.map((_, j) => h("td", { text: pct ? fmtPct(res.base[j]) : fmt(res.colTotal[j]) })), h("td", { text: fmt(res.total) })))),
+        legend: pct ? "pct" : "count", legendMax: compact(Math.round(max)),
       };
     }
     card.update({ draw: spec.draw, table: spec.table });
-    legend.replaceChildren(...(spec.legend ? [swatches([["--seq-1", "0"], ["--seq-2", ""], ["--seq-3", ""], ["--seq-4", ""], ["--seq-5", ""], ["--seq-6", ""], ["--seq-7", spec.legendMax]]), h("p", { class: "chart-sub", text: state.show === "pct" ? "Colour scale is linear." : "Colour scale is a square root, so smaller counts stay visible." })] : []));
+    legend.replaceChildren(...(spec.legend === "pct" ? [
+      swatches([["--div-neg-4", "≤0.4×"], ["--div-neg-3", "0.5×"], ["--div-neg-2", "0.65×"], ["--div-neg-1", "0.8×"], ["--div-0", "average"], ["--div-pos-1", "1.2×"], ["--div-pos-2", "1.5×"], ["--div-pos-3", "2×"], ["--div-pos-4", "2.5×+"]]),
+      h("p", { class: "chart-sub", text: "How much more or less common this is on the row than across all games (× the average). The cell text is the actual share." })]
+      : spec.legend === "count" ? [
+      swatches([["--seq-1", "0"], ["--seq-2", ""], ["--seq-3", ""], ["--seq-4", ""], ["--seq-5", ""], ["--seq-6", ""], ["--seq-7", spec.legendMax]]),
+      h("p", { class: "chart-sub", text: "Colors run on a square-root scale, so smaller counts stay visible." })] : []));
   }
   const legend = h("div", {});
   card.append(legend);
@@ -1006,7 +1049,7 @@ function explorerCard(G, state, onChange) {
 }
 
 function relationshipsSection(params) {
-  const state = { x: params.get("x") || "", y: params.get("y") || "", agg: params.get("agg") || "", view: params.get("view") || "", trim: params.get("trim") !== "0", show: params.get("show") === "pct" ? "pct" : "count",
+  const state = { x: params.get("x") || "", y: params.get("y") || "", agg: params.get("agg") || "", view: params.get("view") || "", trim: params.get("trim") !== "0", show: params.get("show") === "count" ? "count" : "pct",
                   method: params.get("m") === "pearson" ? "pearson" : "spearman" };
   const hasTtb = !!facets.has_time_to_beat;
   if (!state.x) state.x = hasTtb ? "ttb" : "year";
@@ -1018,7 +1061,7 @@ function relationshipsSection(params) {
     h("label", { class: "trim-switch", title: "Ignores the lowest 1% and highest 1% of time to beat and of number of ratings, so a few extreme or mistaken entries don't stretch the charts." },
       trimBox, " Trim extremes ", h("span", { class: "muted", text: "(ignore the lowest and highest 1% of time to beat and number of ratings)" })),
     slot);
-  const keep = () => { const q = new URLSearchParams({ x: state.x, y: state.y }); if (state.agg) q.set("agg", state.agg); if (state.show === "pct") q.set("show", "pct"); if (state.view) q.set("view", state.view); if (!state.trim) q.set("trim", "0"); if (state.method === "pearson") q.set("m", "pearson");
+  const keep = () => { const q = new URLSearchParams({ x: state.x, y: state.y }); if (state.agg) q.set("agg", state.agg); if (state.show === "count") q.set("show", "count"); if (state.view) q.set("view", state.view); if (!state.trim) q.set("trim", "0"); if (state.method === "pearson") q.set("m", "pearson");
     history.replaceState(null, "", appUrl("/stats", q)); };
   const load = async () => {
     try {

@@ -109,7 +109,10 @@ beat, release year, number of ratings and number of platforms move together (Spe
 correlation by default, or Pearson's). Below it you can compare any two measures: pick the X and Y
 axes, or one of the preset questions. The chart follows the choice: two measures give a scatter plot
 with a trend line, a genre or platform against a measure gives bars (average or median, optionally
-as the difference from all games), and two categories give a grid of how many games have both. The
+as the difference from all games), and two categories give a grid. By default the grid shows relative weight: each cell is the share of a
+row's games that fall in the column's category (for "Genre mix by platform", the share of each platform's
+games in each genre), colored against the same share across all games, which is the bottom row: blue is
+more common than average, red less. It can also show raw counts, on a yellow-to-indigo scale. The
 numbers are calculated in the browser (`explorer/static/analysis.js`) from the games table, so this
 needs no extra data.
 
