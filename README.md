@@ -114,6 +114,11 @@ platforms ordered from oldest to newest, as a heatmap with a *Change* column (pe
 column to last) and trend lines for up to four genres. All of it is computed in the browser, so no rebuild
 is needed, and the address (`/stats?from=1990&to=2009&platform=…&genre=…&across=platform`) can be shared.
 
+**How game length has changed** is the same kind of pivot for time to beat: the median hours of each genre
+across eras or platforms (only games with 3+ time reports; a cell needs 8 such games, a column 20), an
+"All games" row, a *Change* column (percent longer or shorter, first column to last) and trend lines. It
+follows the pivot bar too, and its own choices are in the address (`lacross`, `lbin`, `lorder`, `lsort`, `llines`).
+
 ## Relationships (Stats page)
 
 The Stats page ends with a **Relationships** section. A correlation matrix shows how rating, time to

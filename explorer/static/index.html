@@ -1085,7 +1085,8 @@ const sliceCtx = { mask: null, key: "" };           // the games in the current 
 const ERA_PRESETS = [["All years", null, null], ["Before 1990", null, 1989], ["1990s", 1990, 1999], ["2000s", 2000, 2009], ["2010s", 2010, 2019], ["2020s", 2020, null]];
 const csvIds = s => (s || "").split(",").map(x => parseInt(x, 10)).filter(Number.isInteger);
 const statsState = { slice: { from: null, to: null, platforms: [], genres: [] },
-                     cmp: { across: "era", bin: 10, order: "age", sort: "share", show: "pct", lines: [] }, rel: null };
+                     cmp: { across: "era", bin: 10, order: "age", sort: "share", show: "pct", lines: [] },
+                     len: { across: "era", bin: 10, order: "age", sort: "size", lines: [] }, rel: null };
 const sliceActive = () => { const s = statsState.slice; return s.from !== null || s.to !== null || s.platforms.length > 0 || s.genres.length > 0; };
 
 function relState(params) {
@@ -1100,6 +1101,8 @@ function readStatsState(params) {
   statsState.slice = { from: yr(params.get("from")), to: yr(params.get("to")), platforms: csvIds(params.get("platform")), genres: csvIds(params.get("genre")) };
   statsState.cmp = { across: params.get("across") === "platform" ? "platform" : "era", bin: params.get("bin") === "5" ? 5 : 10, order: params.get("order") === "size" ? "size" : "age",
                      sort: ["rise", "fall"].includes(params.get("sort")) ? params.get("sort") : "share", show: params.get("cshow") === "count" ? "count" : "pct", lines: csvIds(params.get("lines")).slice(0, 4) };
+  statsState.len = { across: params.get("lacross") === "platform" ? "platform" : "era", bin: params.get("lbin") === "5" ? 5 : 10, order: params.get("lorder") === "size" ? "size" : "age",
+                     sort: ["long", "short", "rise", "fall"].includes(params.get("lsort")) ? params.get("lsort") : "size", lines: csvIds(params.get("llines")).slice(0, 4) };
   statsState.rel = relState(params);
 }
 /* the address always describes what's on screen, so a view can be shared or bookmarked */
@@ -1115,6 +1118,12 @@ function writeStatsUrl() {
   if (c.sort !== "share") q.set("sort", c.sort);
   if (c.show === "count") q.set("cshow", "count");
   if (c.lines.length) q.set("lines", c.lines.join(","));
+  const l = statsState.len;
+  if (l.across === "platform") q.set("lacross", "platform");
+  if (l.bin === 5) q.set("lbin", "5");
+  if (l.order === "size") q.set("lorder", "size");
+  if (l.sort !== "size") q.set("lsort", l.sort);
+  if (l.lines.length) q.set("llines", l.lines.join(","));
   q.set("x", r.x); q.set("y", r.y);
   if (r.agg) q.set("agg", r.agg);
   if (r.show === "count") q.set("show", "count");
@@ -1216,8 +1225,11 @@ function pivotBar(G, onChange) {
 /* ---------- how the genre mix changes: genres across eras or platforms ---------- */
 const chgVar = d => { const a = Math.abs(d), step = a < 1 ? 0 : a < 3 ? 1 : a < 6 ? 2 : a < 10 ? 3 : 4; return step === 0 ? "--div-0" : `--div-${d > 0 ? "pos" : "neg"}-${step}`; };
 const pts = d => (d > 0 ? "+" : d < 0 ? MINUS : "") + Math.abs(d).toFixed(1);
-const trendSlots = new Map();                       // genre id -> line colour slot (1-4), so a genre keeps its colour while others come and go
-function slotFor(id) { if (!trendSlots.has(id)) { const used = new Set(trendSlots.values()); for (let k = 1; k <= 4; k++) if (!used.has(k)) { trendSlots.set(id, k); break; } } return trendSlots.get(id); }
+/* genre id -> line colour slot (1-4), so a genre keeps its colour while others come and go; each chart keeps its own */
+function lineSlots() {
+  const slots = new Map();
+  return { slots, of(id) { if (!slots.has(id)) { const used = new Set(slots.values()); for (let k = 1; k <= 4; k++) if (!used.has(k)) { slots.set(id, k); break; } } return slots.get(id); } };
+}
 
 function showMultiTip(e, title, rows) {
   tip.replaceChildren(h("b", { text: title }), ...rows.map(r => h("div", { class: "tip-row" }, h("i", { style: `background:var(${r.color})` }), h("span", { text: r.name }), h("b", { text: r.value }))));
@@ -1232,13 +1244,13 @@ function drawLines(host, c) {
   const W = Math.max(320, host.clientWidth), n = c.labels.length;
   const rotate = n > 7 || c.labels.some(l => l.length > 7) || W / n < 70;
   const m = { l: 46, r: Math.min(150, Math.round(W * 0.2)), t: 16, b: rotate ? 88 : 36 }, H = 340, iw = W - m.l - m.r, ih = H - m.t - m.b;
-  const maxV = Math.max(1, ...c.series.flatMap(s => s.values.filter(v => v != null)));
+  const fv = c.fmt || fmtPct, maxV = Math.max(1, ...c.series.flatMap(s => s.values.filter(v => v != null)));
   const step = niceStep(maxV / 4), top = Math.ceil(maxV / step) * step;
   const X = j => m.l + (n === 1 ? iw / 2 : (j / (n - 1)) * iw), Y = v => m.t + ih - (v / top) * ih;
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": c.aria });
   for (let v = 0; v <= top + 1e-9; v += step) {
     svg.append(s("line", { class: "grid-line", x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v) }));
-    svg.append(s("text", { x: m.l - 8, y: Y(v) + 4, "text-anchor": "end", text: `${Math.round(v * 10) / 10}%` }));
+    svg.append(s("text", { x: m.l - 8, y: Y(v) + 4, "text-anchor": "end", text: c.axis ? c.axis(v) : `${Math.round(v * 10) / 10}%` }));
   }
   const every = Math.ceil(46 / Math.max(1, iw / Math.max(1, n - 1)));
   c.labels.forEach((l, j) => {
@@ -1260,11 +1272,11 @@ function drawLines(host, c) {
   }
   ends.sort((a, b) => a.y - b.y);                     // spread the end labels apart so they never overlap
   for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 15) ends[i].y = ends[i - 1].y + 15;
-  for (const e of ends) svg.append(s("text", { class: "strong", x: e.x + 10, y: e.y + 4, text: `${e.sr.name.length > 16 ? e.sr.name.slice(0, 15) + "…" : e.sr.name} ${fmtPct(e.v)}` }));
+  for (const e of ends) svg.append(s("text", { class: "strong", x: e.x + 10, y: e.y + 4, text: `${e.sr.name.length > 16 ? e.sr.name.slice(0, 15) + "…" : e.sr.name} ${fv(e.v)}` }));
   const band = n > 1 ? iw / (n - 1) : iw;
   c.labels.forEach((l, j) => {
-    const hit = s("rect", { class: "hit", x: X(j) - band / 2, y: m.t, width: band, height: ih, tabindex: 0, "aria-label": `${l}: ${c.series.map(sr => `${sr.name} ${sr.values[j] == null ? "no data" : fmtPct(sr.values[j])}`).join(", ")}` });
-    const show = e => { cross.setAttribute("x1", X(j)); cross.setAttribute("x2", X(j)); cross.style.display = ""; showMultiTip(e, l, c.series.map(sr => ({ name: sr.name, color: sr.color, value: sr.values[j] == null ? "–" : fmtPct(sr.values[j]) }))); };
+    const hit = s("rect", { class: "hit", x: X(j) - band / 2, y: m.t, width: band, height: ih, tabindex: 0, "aria-label": `${l}: ${c.series.map(sr => `${sr.name} ${sr.values[j] == null ? "no data" : fv(sr.values[j])}`).join(", ")}` });
+    const show = e => { cross.setAttribute("x1", X(j)); cross.setAttribute("x2", X(j)); cross.style.display = ""; showMultiTip(e, l, c.series.map(sr => ({ name: sr.name, color: sr.color, value: sr.values[j] == null ? "–" : fv(sr.values[j]) }))); };
     hit.addEventListener("pointermove", show);
     hit.addEventListener("focus", () => { const r = hit.getBoundingClientRect(); show({ clientX: r.left + r.width / 2, clientY: r.top + 40 }); });
     const off = () => { cross.style.display = "none"; hideTip(); };
@@ -1285,7 +1297,7 @@ function compareSection(G, opts) {
   const controls = h("div", { class: "filters rel-controls" }, h("div", { class: "seg-row" }, seg), binL, orderL, h("label", { text: "Sort genres by" }, sortSel), h("label", { text: "Show" }, showSel));
   const note = h("p", { class: "chart-sub rel-note" });
   const legendBox = h("div", {});
-  let res;
+  let res; const slots = lineSlots();
 
   const specFor = () => {
     const nC = res.cols.length, pct = c.show !== "count", era = res.across === "era";
@@ -1330,10 +1342,10 @@ function compareSection(G, opts) {
   const drawTrend = () => {
     const ids = chosen(), rows = ids.map(id => res.rows.find(r => r.id === id)).filter(Boolean);
     lineChips.replaceChildren(...res.rows.map(r => h("button", { type: "button", class: "chip pick" + (ids.includes(r.id) ? " on" : ""), text: r.name,
-      onclick: () => { let cur = chosen(); if (cur.includes(r.id)) { cur = cur.filter(x => x !== r.id); trendSlots.delete(r.id); } else if (cur.length < 4) cur = [...cur, r.id]; else return;
+      onclick: () => { let cur = chosen(); if (cur.includes(r.id)) { cur = cur.filter(x => x !== r.id); slots.slots.delete(r.id); } else if (cur.length < 4) cur = [...cur, r.id]; else return;
         c.lines = cur; writeStatsUrl(); drawTrend(); } })));
-    ids.forEach(slotFor);
-    const series = rows.map(r => ({ name: r.name, color: `--series-${slotFor(r.id)}`, values: r.shares }));
+    ids.forEach(slots.of);
+    const series = rows.map(r => ({ name: r.name, color: `--series-${slots.of(r.id)}`, values: r.shares }));
     trend.update({ sub: "Share of each column's games that are in the genre. Gaps are columns with too few games.",
       draw: host => drawLines(host, { labels: res.cols.map(x => x.label), series, aria: "Genre share trend" }),
       table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "" }), res.cols.map(x => h("th", { text: x.label })))),
@@ -1369,6 +1381,103 @@ function compareSection(G, opts) {
   }
   const section = h("section", { class: "rel-section" }, h("h2", { class: "section-title", text: "How the genre mix changes" }),
     h("p", { class: "muted", text: "Compare genres across release eras, or across platforms from older to newer systems. It follows the era, platform and genre choices above." }),
+    h("div", { class: "charts rel-charts" }, heat, trend));
+  rebuild();
+  section.redraw = () => { heat.redraw(); trend.redraw(); };
+  return section;
+}
+
+/* ---------- how game length changes: median time to beat by genre across eras or platforms ---------- */
+const lenVar = hrs => `--seq-${hrs <= 2 ? 1 : hrs <= 4 ? 2 : hrs <= 8 ? 3 : hrs <= 15 ? 4 : hrs <= 30 ? 5 : hrs <= 60 ? 6 : 7}`;
+const pctChgVar = d => { const a = Math.abs(d), step = a < 5 ? 0 : a < 15 ? 1 : a < 30 ? 2 : a < 60 ? 3 : 4; return step === 0 ? "--div-0" : `--div-${d > 0 ? "pos" : "neg"}-${step}`; };
+const pctChg = d => (d > 0 ? "+" : d < 0 ? MINUS : "") + Math.round(Math.abs(d)) + "%";
+const hrsShort = v => (v < 1 ? `${Math.max(1, Math.round(v * 60))}m` : v < 10 ? `${Math.round(v * 10) / 10}h` : `${Math.round(v)}h`);
+
+function lengthSection(G, opts) {
+  const A = IGDB_ANALYSIS, c = statsState.len, sl = statsState.slice;
+  const mkSel = (key, options) => { const el = h("select", { onchange: e => { const v = e.target.value; c[key] = key === "bin" ? +v : v; writeStatsUrl(); rebuild(); } },
+    options.map(([v, t]) => h("option", { value: v, text: t }))); el.value = String(c[key]); return el; };
+  const seg = [["era", "Across eras"], ["platform", "Across platforms"]].map(([k, t]) => h("button", { type: "button", class: "seg" + (c.across === k ? " on" : ""), text: t, onclick: () => { c.across = k; writeStatsUrl(); rebuild(); } }));
+  const binL = h("label", { text: "Era size" }, mkSel("bin", [[10, "Decades"], [5, "5-year eras"]])), orderL = h("label", { text: "Platform order" }, mkSel("order", [["age", "Oldest to newest"], ["size", "Largest first"]]));
+  const sortL = h("label", { text: "Sort genres by" }, mkSel("sort", [["size", "Most timed games"], ["long", "Longest"], ["short", "Shortest"], ["rise", "Biggest lengthening"], ["fall", "Biggest shortening"]]));
+  const controls = h("div", { class: "filters rel-controls" }, h("div", { class: "seg-row" }, seg), binL, orderL, sortL);
+  const note = h("p", { class: "chart-sub rel-note" }), legendBox = h("div", {});
+  let res; const slots = lineSlots();
+
+  const specFor = () => {
+    const nC = res.cols.length, era = res.across === "era", noun = era ? "era" : "platform", lab = j => res.cols[j].label;
+    const lines = [res.all, ...res.rows];
+    const cell = (i, j) => {
+      const r = lines[i];
+      if (j === nC) {
+        if (r.change == null) return { fill: "--surface-2", text: "–", muted: true, tip: ["No change figure", `needs ${res.minCell}+ timed games in both the first and last ${noun}`] };
+        return { fill: pctChgVar(r.change), text: pctChg(r.change), aria: `${r.name} length change ${pctChg(r.change)}`,
+                 tip: [pctChg(r.change), `${r.name}: median ${hoursText(r.meds[res.first])} in ${lab(res.first)} → ${hoursText(r.meds[res.last])} in ${lab(res.last)}`] };
+      }
+      const m = r.meds[j];
+      if (m == null) return { fill: "--surface-2", text: "–", muted: true, tip: ["Too few timed games", `${r.name} in ${lab(j)}: ${fmt(r.counts[j])} with time to beat (needs ${res.minCell}+)`] };
+      return { fill: lenVar(m), text: hrsShort(m), aria: `${r.name}, ${lab(j)}: median ${hoursText(m)}`,
+               tip: [hoursText(m), `Median time to beat of ${r.name} games in ${lab(j)} (${fmt(r.counts[j])} games with data)`] };
+    };
+    const footers = [{ label: "All games", note: `median ${hoursText(res.all.overall)}`, cell: j => (j < nC ? cell(0, j) : j === nC ? cell(0, nC) : null) },
+                     { label: "Timed games", cell: j => (j < nC ? { fill: "--surface-2", text: cellCount(res.cols[j].timed), tip: [fmt(res.cols[j].timed), `${lab(j)} games with time to beat`] } : null) }];
+    const rowsOnly = res.rows, cellRow = (i, j) => cell(i + 1, j);
+    return {
+      draw: host => drawGrid(host, { rows: rowsOnly.map(r => r.name), cols: [...res.cols.map(x => x.label), "Change"], rotate: true, aria: `Median time to beat by genre and ${noun}`,
+        corner: `Genre ↓  ·  ${era ? "Era" : "Platform (old → new)"} →`, rowNotes: rowsOnly.map(r => `median ${hrsShort(r.overall)}`), cell: cellRow, footers }),
+      table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "Genre" }), res.cols.map(x => h("th", { text: x.label })), h("th", { text: "Change" }))),
+        h("tbody", {}, lines.map(r => h("tr", {}, h("td", { text: r.name }), r.meds.map((v, j) => h("td", { text: v == null ? "–" : `${hoursText(v)} (${fmt(r.counts[j])})` })), h("td", { text: r.change == null ? "–" : pctChg(r.change) }))))),
+    };
+  };
+  const heat = vizCard({ title: "Median time to beat, column by column", sub: "", draw: () => {}, table: () => h("div"), headExtra: h("div", {}, controls) });
+  heat.insertBefore(note, heat.querySelector(".chart")); heat.append(legendBox);
+
+  const lineChips = h("div", { class: "presets" });
+  const trend = vizCard({ title: "Length trend lines", sub: "", headExtra: lineChips, draw: () => {}, table: () => h("div") });
+  const choices = () => [res.all, ...res.rows];
+  const chosen = () => { const ids = c.lines.filter(id => choices().some(r => r.id === id)); if (ids.length) return ids;
+    const mv = res.rows.filter(r => r.change != null && r.n >= 100);
+    const up = mv.slice().sort((a, b) => b.change - a.change).slice(0, 2), down = mv.slice().sort((a, b) => a.change - b.change).slice(0, 1).filter(r => !up.includes(r));
+    return [0, ...up.map(r => r.id), ...down.map(r => r.id)]; };
+  const drawTrend = () => {
+    const ids = chosen(), rows = ids.map(id => choices().find(r => r.id === id)).filter(Boolean);
+    lineChips.replaceChildren(...choices().map(r => h("button", { type: "button", class: "chip pick" + (ids.includes(r.id) ? " on" : ""), text: r.name,
+      onclick: () => { let cur = chosen(); if (cur.includes(r.id)) { cur = cur.filter(x => x !== r.id); slots.slots.delete(r.id); } else if (cur.length < 4) cur = [...cur, r.id]; else return;
+        c.lines = cur; writeStatsUrl(); drawTrend(); } })));
+    ids.forEach(slots.of);
+    const series = rows.map(r => ({ name: r.name, color: `--series-${slots.of(r.id)}`, values: r.meds }));
+    trend.update({ sub: "Median hours to beat in each column. Gaps are columns with too few timed games.",
+      draw: host => drawLines(host, { labels: res.cols.map(x => x.label), series, aria: "Median time to beat trend", fmt: hoursText, axis: v => (v === 0 ? "0" : hrsShort(v)) }),
+      table: () => h("table", { class: "data" }, h("thead", {}, h("tr", {}, h("th", { text: "" }), res.cols.map(x => h("th", { text: x.label })))),
+        h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: r.name }), r.meds.map(v => h("td", { text: v == null ? "–" : hoursText(v) })))))) });
+    trend.querySelector(".chart-legend")?.remove();
+    trend.insertBefore(h("div", { class: "legend chart-legend" }, series.map(sr => h("span", { class: "lg inline" }, h("i", { class: "line", style: `background:var(${sr.color})` }), sr.name))), trend.querySelector(".chart"));
+  };
+
+  function rebuild() {
+    seg.forEach((b, i) => b.classList.toggle("on", c.across === ["era", "platform"][i]));
+    binL.hidden = c.across !== "era"; orderL.hidden = c.across !== "platform";
+    res = A.compareLengths(G, facets, { across: c.across, bin: c.bin, order: c.order, sort: c.sort, platformIds: sl.platforms, options: opts });
+    if (!res.valid.length) {
+      heat.update({ sub: "", draw: host => host.replaceChildren(h("p", { class: "muted", text: `No ${c.across === "era" ? "era" : "platform"} has ${res.minCol}+ games with time-to-beat data in this slice, so there is nothing to compare. Widen the slice above.` })), table: () => h("div") });
+      trend.hidden = true; legendBox.replaceChildren(); note.textContent = ""; return;
+    }
+    trend.hidden = false;
+    const era = c.across === "era";
+    note.textContent = (era ? "Each column is a group of release years. " : "Each column is a platform, oldest to newest by the median release year of its games. ") +
+      `Each cell is the median hours to beat (normal playthrough) of the genre's games in that column, counting only games with time reports. A cell needs ${res.minCell}+ timed games and a column ${res.minCol}+, otherwise it is left blank. ` +
+      "Change is how much longer (blue) or shorter (red) the last column is than the first, in percent.";
+    const sp = specFor();
+    heat.update({ sub: "", draw: sp.draw, table: sp.table });
+    legendBox.replaceChildren(
+      swatches([["--seq-1", "≤2 h"], ["--seq-2", "4 h"], ["--seq-3", "8 h"], ["--seq-4", "15 h"], ["--seq-5", "30 h"], ["--seq-6", "60 h"], ["--seq-7", "60 h+"]]),
+      h("p", { class: "chart-sub", text: "Median time to beat." }),
+      swatches([["--div-neg-4", `${MINUS}60%`], ["--div-neg-3", `${MINUS}30%`], ["--div-neg-2", `${MINUS}15%`], ["--div-neg-1", `${MINUS}5%`], ["--div-0", "~0"], ["--div-pos-1", "+5%"], ["--div-pos-2", "+15%"], ["--div-pos-3", "+30%"], ["--div-pos-4", "+60%"]]),
+      h("p", { class: "chart-sub", text: "Change column: how much the median moved from the first column to the last." }));
+    drawTrend(); trend.redraw();
+  }
+  const section = h("section", { class: "rel-section" }, h("h2", { class: "section-title", text: "How game length has changed" }),
+    h("p", { class: "muted", text: "Median time to beat by genre, across release eras or platforms from older to newer systems. It follows the era, platform and genre choices above." }),
     h("div", { class: "charts rel-charts" }, heat, trend));
   rebuild();
   section.redraw = () => { heat.redraw(); trend.redraw(); };
@@ -1435,7 +1544,7 @@ async function statsPage(params) {
         ...(sum.ttb_by_year.length ? [chartCard("Median time to beat, by release year", "Hours for a normal playthrough; years with 20+ timed games", sum.ttb_by_year, { axis: "Year", unit: "median hours" })] : []),
       ] : []),
     ];
-    const compare = compareSection(G, opts);
+    const compare = compareSection(G, opts), lengths = facets.has_time_to_beat && sum.totals.timed ? lengthSection(G, opts) : null;
     results.replaceChildren(
       h("div", { class: "tiles" },
         tile(fmt(t.games), sliceActive() ? "games in this slice" : scoped() ? "games with an ESRB rating" : "games in the dump"),
@@ -1444,9 +1553,9 @@ async function statsPage(params) {
         t.timed ? tile(fmt(t.timed), "with time to beat" + pctOf(t.timed, t.games)) : null,
         tile(t.first_year != null ? `${t.first_year}–${t.last_year}` : "–", "release years covered")),
       h("div", { class: "charts" }, cards),
-      compare,
+      compare, lengths,
       relationshipsSection(statsState.rel));
-    cards.forEach(c => c.redraw()); compare.redraw();
+    cards.forEach(c => c.redraw()); compare.redraw(); lengths && lengths.redraw();
   }
   renderResults();
 }

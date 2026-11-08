@@ -363,11 +363,10 @@
    * that gets numbers, options: scope/slice}. `change` is the last column's share minus the first's, in
    * percentage points, using the first and last columns that are big enough.
    */
-  function compareShares(G, facets, cfg) {
-    const o = opt(cfg.options), rated = o.scoped && G.rated ? G.rated : null, mask = o.mask;
-    const minGames = cfg.minGames || 30, genres = facets.genres, gIndex = new Map(genres.map((g, i) => [g.id, i]));
-    const included = i => !((rated && !rated[i]) || (mask && !mask[i]));
-    let cols = [], colOf;                                    // colOf(i) -> list of column indexes the game belongs to
+  /* The columns of a comparison (release eras, or platforms oldest to newest), and colOf(i) -> the column indexes game i falls in.
+     `mk(base)` adds the caller's own fields to each column. */
+  function makeColumns(G, facets, cfg, o, included, mk) {
+    let cols = [], colOf;
     if (cfg.across === "platform") {
       const ages = platformAges(G, facets, options0(o));
       const byId = new Map(ages.map(a => [a.id, a]));
@@ -376,7 +375,7 @@
       const picked = ids.map(id => byId.get(id));
       picked.sort(cfg.order === "size" ? (p, q) => q.n - p.n || p.name.localeCompare(q.name)
         : (p, q) => (p.median ?? 1e9) - (q.median ?? 1e9) || q.n - p.n || p.name.localeCompare(q.name));
-      cols = picked.map(a => ({ key: a.id, label: a.name, age: a.median, n: 0, counts: new Int32Array(genres.length) }));
+      cols = picked.map(a => ({ key: a.id, label: a.name, age: a.median, n: 0, ...mk() }));
       const at = new Map(cols.map((c, j) => [c.key, j]));
       colOf = i => { const r = []; for (const id of G.platforms[i]) { const j = at.get(id); if (j !== undefined) r.push(j); } return r; };
     } else {
@@ -384,10 +383,17 @@
       let lo = Infinity, hi = -Infinity;
       for (let i = 0; i < G.n; i++) if (included(i)) { const y = G.year[i]; if (y !== NULL && y >= 1970 && y <= THIS_YEAR) { if (y < lo) lo = y; if (y > hi) hi = y; } }
       if (lo <= hi) for (let s0 = Math.floor(lo / bin) * bin; s0 <= hi; s0 += bin)
-        cols.push({ key: s0, label: bin === 10 ? `${s0}s` : `${s0}–${String(s0 + bin - 1).slice(2)}`, from: s0, to: s0 + bin - 1, n: 0, counts: new Int32Array(genres.length) });
+        cols.push({ key: s0, label: bin === 10 ? `${s0}s` : `${s0}–${String(s0 + bin - 1).slice(2)}`, from: s0, to: s0 + bin - 1, n: 0, ...mk() });
       const start = cols.length ? cols[0].from : 0;
       colOf = i => { const y = G.year[i]; if (y === NULL || y < 1970 || y > THIS_YEAR) return []; const j = Math.floor((y - start) / bin); return j >= 0 && j < cols.length ? [j] : []; };
     }
+    return { cols, colOf };
+  }
+  function compareShares(G, facets, cfg) {
+    const o = opt(cfg.options), rated = o.scoped && G.rated ? G.rated : null, mask = o.mask;
+    const minGames = cfg.minGames || 30, genres = facets.genres, gIndex = new Map(genres.map((g, i) => [g.id, i]));
+    const included = i => !((rated && !rated[i]) || (mask && !mask[i]));
+    const { cols, colOf } = makeColumns(G, facets, cfg, o, included, () => ({ counts: new Int32Array(genres.length) }));
     const overall = new Int32Array(genres.length);
     let nAll = 0;
     for (let i = 0; i < G.n; i++) {
@@ -414,12 +420,53 @@
       : (p, q) => q.overall - p.overall || p.name.localeCompare(q.name));
     return { across: cfg.across === "platform" ? "platform" : "era", cols, rows, nAll, minGames, first, last, valid };
   }
+
+  /* How game length (time to beat) moves across eras or platforms: the median hours for each genre in each column, plus an
+     "all games" row. Only games with MIN_REPORTS+ time reports count. cfg like compareShares plus minCell (8) and minCol (20). */
+  function compareLengths(G, facets, cfg) {
+    const o = opt(cfg.options), rated = o.scoped && G.rated ? G.rated : null, mask = o.mask;
+    const minCell = cfg.minCell || 8, minCol = cfg.minCol || 20, minRow = cfg.minRow || 30;
+    const genres = facets.genres, gIndex = new Map(genres.map((g, i) => [g.id, i]));
+    const included = i => !((rated && !rated[i]) || (mask && !mask[i]));
+    const { cols, colOf } = makeColumns(G, facets, cfg, o, included, () => ({ timed: 0, all: [], by: new Array(genres.length) }));
+    const overall = genres.map(() => []), overallAll = [];
+    for (let i = 0; i < G.n; i++) {
+      if (!included(i) || !(G.ttb[i] >= 1 && G.ttbn[i] >= MIN_REPORTS)) continue;
+      const cs = colOf(i);
+      if (!cs.length) continue;
+      const hrs = G.ttb[i] / 10;
+      overallAll.push(hrs);
+      const ks = [];
+      for (const id of G.genres[i]) { const k = gIndex.get(id); if (k !== undefined) { overall[k].push(hrs); ks.push(k); } }
+      for (const j of cs) {
+        const c = cols[j]; c.timed++; c.all.push(hrs);
+        for (const k of ks) (c.by[k] || (c.by[k] = [])).push(hrs);
+      }
+    }
+    const median = a => { if (!a || !a.length) return null; const s = Float64Array.from(a).sort(); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+    for (const c of cols) c.n = c.timed;
+    const valid = cols.map((c, j) => (c.timed >= minCol ? j : -1)).filter(j => j >= 0);
+    const first = valid.length > 1 ? valid[0] : -1, last = valid.length > 1 ? valid[valid.length - 1] : -1;
+    const line = (id, name, perCol, total) => {
+      const meds = cols.map((c, j) => (perCol(c).length >= minCell && c.timed >= minCol ? median(perCol(c)) : null));
+      const ok = first >= 0 && meds[first] != null && meds[last] != null;
+      return { id, name, overall: median(total), meds, counts: cols.map(c => perCol(c).length), n: total.length,
+               delta: ok ? meds[last] - meds[first] : null, change: ok && meds[first] > 0 ? (100 * (meds[last] - meds[first])) / meds[first] : null };
+    };
+    const all = line(0, "All games", c => c.all, overallAll);
+    let rows = genres.map((g, k) => line(g.id, g.name, c => c.by[k] || [], overall[k])).filter(r => r.n >= minRow);
+    const by = cfg.sort || "size";
+    const cmp = { size: (p, q) => q.n - p.n, long: (p, q) => q.overall - p.overall, short: (p, q) => p.overall - q.overall,
+                  rise: (p, q) => (q.change ?? -1e9) - (p.change ?? -1e9), fall: (p, q) => (p.change ?? 1e9) - (q.change ?? 1e9) }[by] || ((p, q) => q.n - p.n);
+    rows.sort((p, q) => cmp(p, q) || q.n - p.n || p.name.localeCompare(q.name));
+    return { across: cfg.across === "platform" ? "platform" : "era", cols, rows, all, nTimed: overallAll.length, minCell, minCol, first, last, valid };
+  }
   // the scope-and-slice options again, without any trim (the trim only concerns the relationship analysis)
   const options0 = o => ({ scoped: o.scoped, mask: o.mask, maskKey: o.maskKey });
 
   /* What the trim left out: {measure: {lo, hi, dropped, n}} with lo/hi in the measure's own units. */
   const trimInfo = (G, options) => prepare(G, options).trims;
 
-  window.IGDB_ANALYSIS = { sliceMask, scopeCount, summarize, platformAges, compareShares, trimInfo, buildColumns, METRICS, CATEGORIES, isCat, MIN_CAT_N, MIN_RATINGS, MIN_REPORTS, MAX_POINTS,
+  window.IGDB_ANALYSIS = { sliceMask, scopeCount, summarize, platformAges, compareShares, compareLengths, trimInfo, buildColumns, METRICS, CATEGORIES, isCat, MIN_CAT_N, MIN_RATINGS, MIN_REPORTS, MAX_POINTS,
                            strength, scatter, categoryBars, crossTab, correlationMatrix, averageRanks, pearson };
 })();
