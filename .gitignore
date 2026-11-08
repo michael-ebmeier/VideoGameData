@@ -5,3 +5,6 @@ data/
 .env
 .venv/
 __pycache__/
+
+# Static site build output
+site/

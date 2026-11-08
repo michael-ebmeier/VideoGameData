@@ -1,138 +1,122 @@
 # Putting the explorer on your website (games.brutalc.com)
 
-This guide assumes shared hosting with cPanel and a **subdomain** (`games.brutalc.com`), linked
-from your main site. A subdomain is separate from your main site's `.htaccess`, so it can't
-interfere with WordPress or other tools. (The explorer can also run under a path such as
-`/games`; see the note at the end of Plan A.)
+The website is **static**: plain files (a page, a script, and some data files) that any web
+server can host. Nothing runs on the host while people browse: no Python app, no Passenger, no
+database. Visitors' browsers do the searching themselves.
 
-**Read "Will your host cope?" first**: the
-explorer itself is light, but the daily refresh is not, and that is where shared hosting
-often fails.
+A **nightly cron job** on your host keeps it fresh:
+
+1. `fetch_igdb.py --update` downloads what IGDB changed in **all** endpoints and merges it into
+   your `.jsonl` files.
+2. `build_static.py` turns the tables the explorer uses into a new version of the data files and
+   switches the site over to it. Visitors never see a half-updated site, and one that already has
+   the page open keeps working (the previous version is kept for a day).
 
 ## Before you publish: terms
-IGDB's data is free for **non-commercial** use under Twitch's terms, and a public site makes it
+IGDB's data is free for **non-commercial** use under Twitch's terms, and a public site is
 redistribution. Read <https://api-docs.igdb.com/#terms-of-service>. The explorer shows an
 "IGDB.com" credit and links each game back to IGDB; keep both. No ads or paywall on top of it.
 
-## Will your host cope?
-Check each of these in cPanel (or ask your host's support, who can answer them in a minute):
+## What your host needs
+- **Cron jobs** that can run for ~30+ minutes (the nightly job is mostly waiting on IGDB).
+- **Python 3.9+** with `requests` and `duckdb` in a virtualenv (you already have `~/igdb-venv`).
+- **~10 GB free disk.** The `.jsonl` files are 1.5–3 GB; the website itself is under 100 MB.
+- **Memory:** in a test with 350,000 synthetic games, the build took ~50 seconds and peaked at
+  about 650 MB with `DUCKDB_MEMORY_LIMIT=512MB DUCKDB_THREADS=1`. Real data will differ.
+- Outbound HTTPS to `api.igdb.com` and `id.twitch.tv`.
 
-| Need | Why |
-|---|---|
-| **Setup Python App** exists in cPanel (Python 3.9+; 3.11 or 3.12 is the safe pick) | runs the explorer |
-| **Terminal or SSH** access | install packages, run scripts |
-| **Cron Jobs** that can run for 30+ minutes | the daily refresh |
-| **~2 GB or more of RAM** for your account | rebuilding the database |
-| **~10 GB free disk** | the data is 1.5–3 GB of text plus a ~1 GB database |
-| Outbound HTTPS to `api.igdb.com` and `id.twitch.tv` | fetching updates |
+## Setup (once)
 
-Typical trouble: shared hosts kill processes that use too much memory or CPU. The explorer
-itself is fine, but rebuilding the database from a multi-GB dump may get killed. If that
-happens, use Plan B or C at the bottom. You don't have to find out in advance: try it, and
-read the log.
+### 0. Stop using the Python app
+If you registered a Python app for `games.brutalc.com` in cPanel's **Application Manager**, remove
+that registration. It isn't needed, and its leftover lines in `~/games.brutalc.com/.htaccess` could
+interfere. If that `.htaccess` still has `Passenger…` lines afterwards, delete the file; the build
+creates a correct one. (Leave the subdomain itself; the build writes into its folder.)
 
-## Plan A: everything on the shared host
-
-### 1. Get the code onto the server
-In cPanel's Terminal (or SSH). Put it **outside** `public_html`:
+### 1. Code and packages
+In the server terminal:
 ```bash
-cd ~
-git clone https://github.com/michael-ebmeier/VideoGameData igdb-explorer
-```
-
-### 2. Create the subdomain and the Python app
-First create the subdomain: cPanel → **Domains** → **Create A New Domain** → `games.brutalc.com`.
-Leave its document root as the default empty folder; the app does not live there.
-
-Then, in **Setup Python App** (on some Bluehost accounts: **Application Manager**) → **Create
-Application**:
-- **Python version:** 3.11 or 3.12
-- **Application root:** `igdb-explorer`
-- **Domain / Application URL:** `games.brutalc.com`, with no path after it
-- **Application startup file:** `passenger_wsgi.py`
-- **Application Entry point:** `application`
-
-After saving, cPanel shows a command like `source /home/USER/virtualenv/igdb-explorer/3.11/bin/activate`.
-Run it in the terminal, then install the packages:
-```bash
-cd ~/igdb-explorer
+cd ~/igdb-explorer && git pull
+source ~/igdb-venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Add your Twitch credentials (on the server only)
+### 2. Twitch credentials (server only)
 ```bash
-python make_env.py        # paste the Client Secret when asked
+python make_env.py        # paste the Client Secret at the hidden prompt
 chmod 600 .env
 ```
-`.env` stays in the app folder, outside the web root, and is never committed to git.
 
-### 4. Load the initial data
-The first full download takes hours, so **do it on your own computer** (you already have it)
-and upload `data/igdb/` (the `.jsonl` files) to `~/igdb-explorer/data/igdb/` using cPanel's
-File Manager or SFTP (zip it first; it's large). Then on the server:
+### 3. Upload your data
+From your PC, upload `data\igdb\*.jsonl` to `~/igdb-explorer/data/igdb/` (create the folders). Only the
+`.jsonl` files are needed; **don't** upload `igdb.duckdb`. SFTP resumes interrupted transfers, so a
+multi-GB upload is fine.
+
+### 4. First build
 ```bash
-cd ~/igdb-explorer
-DUCKDB_MEMORY_LIMIT=1GB DUCKDB_THREADS=1 python load_duckdb.py
+cd ~/igdb-explorer && source ~/igdb-venv/bin/activate
+DUCKDB_MEMORY_LIMIT=512MB DUCKDB_THREADS=1 python build_static.py --out ~/games.brutalc.com
 ```
-Then restart the app: the **Restart** button in Setup Python App, or `touch tmp/restart.txt`
-in the app folder. Visit <https://games.brutalc.com>. A new subdomain's HTTPS certificate
-(AutoSSL) can take a few minutes to appear. (No `state.json` yet? That's fine: the
-first update copes and creates it.)
+Open <https://games.brutalc.com>. (The first visit downloads the games table, a few MB, and later
+visits reuse it from the browser cache.)
 
-### 5. Schedule the daily refresh
-cPanel → **Cron Jobs** → add a daily job. Pick an off-peak, odd minute (your server's time zone):
+### 5. Schedule the nightly job
+cPanel → **Cron Jobs** → add a daily job. Use absolute paths and an odd minute (server time zone):
 ```
-17 4 * * * cd /home/USER/igdb-explorer && DUCKDB_MEMORY_LIMIT=1GB DUCKDB_THREADS=1 /home/USER/virtualenv/igdb-explorer/3.11/bin/python update.py --monthly-refresh > data/update.log 2>&1
+17 4 * * * cd /home3/mikeebme/igdb-explorer && DUCKDB_MEMORY_LIMIT=512MB DUCKDB_THREADS=1 /home3/mikeebme/igdb-venv/bin/python update.py --static-out /home3/mikeebme/games.brutalc.com --monthly-refresh > data/update.log 2>&1
 ```
-Replace `USER` and the Python path with what cPanel showed in step 2. What it does each day:
-1. downloads only what IGDB changed in **all** endpoints and merges it in,
-2. builds a new database and swaps it in. The running site picks it up by itself; no restart,
-3. on the 1st of each month, first re-downloads `games` from scratch to drop records IGDB deleted.
-
-A lock stops two runs overlapping, and if anything fails the old database stays in place.
-`data/update.log` holds the last run's timestamped output.
+A lock stops overlapping runs. If any step fails, the version that is live stays live.
+`--monthly-refresh` re-downloads `games` from scratch on the 1st of each month to drop records
+IGDB deleted (IGDB doesn't announce deletions). `data/update.log` holds the last run.
 
 ### 6. Check it worked
-Next morning:
+The next morning:
 ```bash
 tail -20 ~/igdb-explorer/data/update.log
 ```
-You want `done in …s` at the end. Also try a search at games.brutalc.com for something added
-recently.
+You want `done in …s` at the end. Also search for something added recently. `data/manifest.json`
+on the site shows the build time.
 
-### Updating the code later
+### 7. Link to it
+Add a link to `games.brutalc.com` from your tools page on brutalc.com.
+
+## Updating the tool itself
+When we change the explorer here:
 ```bash
 cd ~/igdb-explorer && git pull
-touch tmp/restart.txt
+source ~/igdb-venv/bin/activate
+python build_static.py --out ~/games.brutalc.com --frontend-only
 ```
+`--frontend-only` refreshes just the page and script, so it takes a second. I'll say when a change
+also needs the data files rebuilt; then run the same command without `--frontend-only`.
 
-**Running under a path instead** (`brutalc.com/games`): the app supports it. Enter the path as
-the application's base URL when creating it. The catch is that the host adds rules to the main
-site's `.htaccess`, the same file WordPress uses, so there is a small chance of a conflict. A
-subdomain avoids that, which is why this guide uses one.
-
-## Plan B (recommended if Plan A struggles): a small VPS
-A $5/month Linux VPS runs this comfortably. Same steps, but run the app with
-`gunicorn passenger_wsgi:application` behind nginx, and point `games.brutalc.com` at it
-(a DNS record to the VPS's address). To keep a `/games` path instead, put your domain
-on Cloudflare and route `brutalc.com/games*` to the VPS with a Worker. Ask me and I'll write
-the exact config.
-
-## Plan C: build elsewhere, serve on the shared host
-Run `python update.py` on your own computer (or a VPS), then upload only the new
-`data/igdb.duckdb` to the host under a temporary name and rename it into place (the rename is
-atomic, and the site picks it up on the next request). The shared host then only serves
-pages, which is the easy part. Upload `data/igdb.duckdb.new`, then:
-```bash
-mv data/igdb.duckdb.new data/igdb.duckdb
+## Try it on your own computer first
+```powershell
+python build_static.py --out site
+python -m http.server 8000 --directory site
 ```
+then open <http://127.0.0.1:8000>. (Opening `index.html` by double-clicking won't work; it
+needs a web server.)
+
+## If the host can't run the build
+If the nightly job gets "Killed" or runs out of time, build somewhere else and upload the result:
+run `python update.py --static-out site` on your PC (or a small VPS), then upload the contents of
+the `site` folder to `~/games.brutalc.com` by SFTP. The finished site is under 100 MB, so this is
+a light upload. Upload `data/<new version>/` first and `data/manifest.json` last.
 
 ## Troubleshooting
-- **500 error / blank page:** check `stderr.log` in the app folder (File Manager).
-- **"No module named duckdb":** you installed into the wrong Python. Re-run the
-  `source …/activate` command from step 2 first.
-- **"The database is not available yet":** `data/igdb.duckdb` doesn't exist yet (step 4).
-- **Cron job produced no `done`:** the host probably killed it. Check `update.log` for the last
-  line and see Plan B or C.
-- **Covers missing:** the covers load from IGDB in the visitor's browser, so they need the
-  `covers` endpoint downloaded and an internet connection on the visitor's side.
+- **"Index of /" listing:** the build hasn't run, or wrote to a different folder. Check that
+  `~/games.brutalc.com/index.html` exists.
+- **Page loads but says "Something went wrong":** reload. If it persists, check that
+  `data/manifest.json` exists on the site and the version folder it names is present.
+- **"This browser is too old":** the data is read with a browser feature from 2023 or later.
+- **Cron produced no `done` line:** read `data/update.log`. "Killed" means too little memory:
+  lower `DUCKDB_MEMORY_LIMIT`, or use the section above.
+- **Covers are blank:** they load from IGDB in the visitor's browser, so they need the `covers`
+  endpoint in your data and an internet connection on the visitor's side.
+
+## Appendix: running it as a Python app instead
+`python explorer/server.py` runs the same explorer locally against a DuckDB database
+(`python load_duckdb.py` builds it), and `passenger_wsgi.py` lets hosts that support Python apps
+serve it. It's no longer needed for this site but works on a VPS (e.g. `gunicorn
+passenger_wsgi:application` behind nginx) if you ever want server-side features.

@@ -92,9 +92,17 @@ Stop the server with Ctrl+C. Rebuild the database (`load_duckdb.py`) only while 
 
 ## Putting it on a website
 
-`DEPLOY.md` walks through hosting the explorer on a subdomain like `games.yoursite.com` (or a path) on cPanel
-shared hosting, with a daily cron job that refreshes every endpoint. It also covers a VPS and
-"build elsewhere, upload the database" alternatives.
+The explorer can be built as a **static website**: plain files you can host anywhere, with no
+Python app or database on the host and a nightly cron job that refreshes it.
+
+```bash
+python build_static.py --out site                     # build it
+python -m http.server 8000 --directory site           # try it at http://127.0.0.1:8000
+python update.py --static-out ~/games.example.com     # the nightly job: update data + rebuild
+```
+
+`DEPLOY.md` walks through hosting it on cPanel shared hosting at `games.brutalc.com`, including
+the cron job.
 
 ## Terms
 

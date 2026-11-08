@@ -100,14 +100,18 @@ class Store:
             return "LEFT JOIN covers cv ON cv.id = g.cover", "cv.image_id"
         return "", "NULL"
 
-    def names(self, table, ids):
+    def pairs(self, table, ids):
+        """[(id, name), ...] for the ids that have a name, in the original order."""
         ids = as_int_list(ids)
         if not ids or table not in self.tables:
             return []
         marks = ",".join("?" * len(ids))
         found = {r["id"]: r["name"] for r in
                  self.rows(f"SELECT id, name FROM {table} WHERE id IN ({marks})", ids)}
-        return [found[i] for i in ids if i in found]
+        return [(i, found[i]) for i in ids if i in found]
+
+    def names(self, table, ids):
+        return [name for _, name in self.pairs(table, ids)]
 
     YEAR = "CAST(date_part('year', make_timestamp(CAST(CAST(g.first_release_date AS BIGINT) * 1000000 AS BIGINT))) AS INTEGER)"
 
@@ -181,9 +185,9 @@ class Store:
             "user_rating": clean(g.get("rating")), "critic_rating": clean(g.get("aggregated_rating")),
             "url": text(g.get("url")),
             "genres": self.names("genres", g.get("genres")),
-            "genre_ids": as_int_list(g.get("genres")),
+            "genre_ids": [i for i, _ in self.pairs("genres", g.get("genres"))],
             "platforms": self.names("platforms", g.get("platforms")),
-            "platform_ids": as_int_list(g.get("platforms")),
+            "platform_ids": [i for i, _ in self.pairs("platforms", g.get("platforms"))],
             "themes": self.names("themes", g.get("themes")),
             "modes": self.names("game_modes", g.get("game_modes")),
             "perspectives": self.names("player_perspectives", g.get("player_perspectives")),
@@ -221,7 +225,7 @@ class Store:
                 out[key] = self.rows(
                     f"SELECT t.id, t.name, count(*) AS n FROM {table} t "
                     f"JOIN (SELECT unnest({column}) AS ref FROM games) x ON x.ref = t.id "
-                    f"GROUP BY t.id, t.name ORDER BY n DESC")
+                    f"GROUP BY t.id, t.name ORDER BY n DESC, t.id")
         out["platforms"] = [p for p in out["platforms"] if p["n"] >= 50]
         out["genres"].sort(key=lambda r: r["name"] or "")
         return out

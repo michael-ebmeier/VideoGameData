@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-One command to bring your local IGDB data up to date:
+One command to bring your IGDB data up to date:
 
-  python update.py
+  python update.py                          # update the files, then rebuild data/igdb.duckdb
+  python update.py --static-out DIR         # update the files, then rebuild the STATIC website in DIR
 
 It runs `fetch_igdb.py --update` (downloads only what changed since last time and
-merges it into data/igdb/*.jsonl), then `load_duckdb.py` to rebuild data/igdb.duckdb.
-The new database is swapped in at the end, so a running explorer keeps working and
-picks it up on its next request.
+merges it into data/igdb/*.jsonl), then either `load_duckdb.py` (new database swapped in
+at the end, so a running `explorer/server.py` picks it up) or, with --static-out,
+`build_static.py` (new data version published into DIR; visitors switch over seamlessly).
 
 Safe to run from cron every day:
   * a lock file stops two runs from overlapping (a run older than 12 hours is treated as dead)
@@ -15,6 +16,7 @@ Safe to run from cron every day:
   * exit status is non-zero if anything failed, so cron/monitoring can tell
 
 Options (anything else is passed to fetch_igdb.py, e.g. --endpoints games):
+  --static-out DIR    publish the static website into DIR instead of building the database
   --monthly-refresh   on the 1st of the month, first re-download `games` from scratch.
                       IGDB never announces deleted records, so this is what clears them.
 """
@@ -81,6 +83,13 @@ def main():
     args = sys.argv[1:]
     monthly = "--monthly-refresh" in args
     args = [a for a in args if a != "--monthly-refresh"]
+    static_out = None
+    if "--static-out" in args:
+        i = args.index("--static-out")
+        if i + 1 >= len(args):
+            sys.exit("--static-out needs a folder, e.g. --static-out ~/games.brutalc.com")
+        static_out = os.path.expanduser(args[i + 1])
+        del args[i:i + 2]
 
     take_lock()
     try:
@@ -92,7 +101,10 @@ def main():
         if run("fetch_igdb.py", "--update", *args) != 0:
             sys.exit("The update did not finish, so the database was not rebuilt. "
                      "Run it again to continue where it stopped.")
-        if run("load_duckdb.py") != 0:
+        if static_out:
+            if run("build_static.py", "--out", static_out) != 0:
+                sys.exit("Building the website failed. The version that is live is unchanged.")
+        elif run("load_duckdb.py") != 0:
             sys.exit("Rebuilding the database failed. The previous database (if any) is unchanged.")
         say(f"done in {int(time.time() - started)}s")
     finally:

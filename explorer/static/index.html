@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <base href="__BASE__">
+<!--STATIC_API-->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VideoGameData Explorer</title>
 <style>
@@ -230,6 +231,8 @@ const app = document.getElementById("app");
 const fmt = n => (n == null ? "–" : Number(n).toLocaleString());
 
 async function api(path, params) {
+  // The static build adds static-api.js, which answers these calls in the browser (no server).
+  if (window.IGDB_STATIC) return window.IGDB_STATIC.api(path, params || {});
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params || {})) if (v !== "" && v != null) qs.set(k, v);
   const res = await fetch(path + (qs.size ? "?" + qs : ""));
@@ -287,7 +290,9 @@ async function route() {
   } catch (e) {
     app.replaceChildren(h("div", { class: "error" },
       h("b", { text: "Something went wrong. " }), h("code", { text: e.message }),
-      h("p", { class: "muted", text: "Is the server still running, and did load_duckdb.py finish?" })));
+      h("p", { class: "muted", text: window.IGDB_STATIC
+        ? "Try reloading the page. If it keeps happening, the data may be in the middle of its daily update."
+        : "Is the server still running, and did load_duckdb.py finish?" })));
   }
 }
 window.addEventListener("hashchange", route);
