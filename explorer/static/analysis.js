@@ -47,22 +47,28 @@
 
   const METRICS = {
     rating:    { label: "Average rating",      phrase: "rating", short: "Rating",       log: false, value: r => r / 100, note: `games with ${MIN_RATINGS}+ ratings` },
-    ttb:       { label: "Time to beat", phrase: "time to beat",        short: "Time to beat", log: true,  value: r => r / 10,  note: `games with ${MIN_REPORTS}+ reports` },
+    ttb:       { label: "Time to beat", phrase: "time to beat",        short: "Time to beat", log: true, trim: true,  value: r => r / 10,  note: `games with ${MIN_REPORTS}+ reports` },
     year:      { label: "Release year", phrase: "release year",        short: "Year",         log: false, value: r => r,       note: "released games" },
-    votes:     { label: "Number of ratings", phrase: "number of ratings",   short: "Ratings",      log: true,  value: r => r,       note: "games with at least 1 rating" },
+    votes:     { label: "Number of ratings", phrase: "number of ratings",   short: "Ratings",      log: true, trim: true,  value: r => r,       note: "games with at least 1 rating" },
     platforms: { label: "Number of platforms", phrase: "number of platforms", short: "Platforms",    log: false, value: r => r,       note: "all games" },
   };
   const CATEGORIES = { genre: "Genre", platform: "Platform" };
   const isCat = key => key in CATEGORIES;
   const transform = (key, raw) => { const v = METRICS[key].value(raw); return METRICS[key].log ? Math.log10(v) : v; };
 
-  /* Per-measure integer columns (NULL where a game doesn't count), built once per table. */
-  function prepare(G, scoped) {
-    const key = scoped && G.rated ? "rated" : "all";
+  // Analysis options: `scoped` limits to games with an ESRB rating; `trim` leaves out the lowest and highest 1%
+  // of the heavy-tailed measures (time to beat, number of ratings). A bare boolean means just `scoped`.
+  const opt = o => (o && typeof o === "object" ? { scoped: !!o.scoped, trim: !!o.trim } : { scoped: !!o, trim: false });
+  const TRIM_SHARE = 0.01;
+
+  /* Per-measure integer columns (NULL where a game doesn't count), built once per table and option set. */
+  function prepare(G, options) {
+    const o = opt(options), scoped = o.scoped && !!G.rated;
+    const key = (scoped ? "rated" : "all") + (o.trim ? "+trim" : "");
     G._an = G._an || {};
     if (G._an[key]) return G._an[key];
-    const n = G.n, raw = {}, max = {};
-    const skip = key === "rated" ? G.rated : null;           // games outside the scope count for nothing
+    const n = G.n, raw = {}, max = {}, trims = {};
+    const skip = scoped ? G.rated : null;                    // games outside the scope count for nothing
     for (const k of Object.keys(METRICS)) { raw[k] = new Int32Array(n).fill(NULL); max[k] = 0; }
     for (let i = 0; i < n; i++) {
       if (skip && !skip[i]) continue;
@@ -74,8 +80,22 @@
       const np = G.platforms[i].length;
       if (np >= 1) raw.platforms[i] = np;
     }
+    if (o.trim) {
+      for (const k of Object.keys(METRICS)) {
+        if (!METRICS[k].trim) continue;
+        const vals = [];
+        for (let i = 0; i < n; i++) if (raw[k][i] !== NULL) vals.push(raw[k][i]);
+        if (vals.length < 2) continue;
+        const sorted = Int32Array.from(vals).sort();         // typed arrays sort numerically
+        const lo = sorted[Math.floor(TRIM_SHARE * (sorted.length - 1))], hi = sorted[Math.ceil((1 - TRIM_SHARE) * (sorted.length - 1))];
+        let dropped = 0;
+        for (let i = 0; i < n; i++) if (raw[k][i] !== NULL && (raw[k][i] < lo || raw[k][i] > hi)) { raw[k][i] = NULL; dropped++; }
+        // ties at the cut-off are kept, so a lot of identical values never gets trimmed away
+        if (dropped) trims[k] = { lo: METRICS[k].value(lo), hi: METRICS[k].value(hi), dropped, n: vals.length };
+      }
+    }
     for (const k of Object.keys(METRICS)) for (let i = 0; i < n; i++) if (raw[k][i] > max[k]) max[k] = raw[k][i];
-    return (G._an[key] = { raw, max, pairs: {} });
+    return (G._an[key] = { raw, max, pairs: {}, trims });
   }
 
   /* ----- statistics ----- */
@@ -102,8 +122,8 @@
   }
 
   /* Both coefficients for a pair of measures, over the games that count for both. */
-  function pairData(G, a, b, keepPoints, scoped) {
-    const A = prepare(G, scoped), ra = A.raw[a], rb = A.raw[b];
+  function pairData(G, a, b, keepPoints, options) {
+    const A = prepare(G, options), ra = A.raw[a], rb = A.raw[b];
     const cached = A.pairs[a + "|" + b];
     if (cached && !keepPoints) return cached;
     let m = 0;
@@ -132,8 +152,8 @@
   /* ----- the three kinds of comparison ----- */
 
   /* Two measures: scatter of a sample of games plus the coefficients over all of them. */
-  function scatter(G, xk, yk, scoped) {
-    const d = pairData(G, xk, yk, true, scoped);
+  function scatter(G, xk, yk, options) {
+    const d = pairData(G, xk, yk, true, options);
     const out = { type: "scatter", xk, yk, n: d.n, pearson: d.pearson, spearman: d.spearman, slope: d.slope, intercept: d.intercept, points: [] };
     if (d.n < 3) return out;
     const take = Math.min(MAX_POINTS, d.n), step = d.n / take;
@@ -157,8 +177,8 @@
   const round1 = v => Math.round(v * 10) / 10;
 
   /* A genre or platform against one measure: the average (or median) per category. */
-  function categoryBars(G, facets, catKey, numKey, agg, scoped) {
-    const A = prepare(G, scoped), raw = A.raw[numKey];
+  function categoryBars(G, facets, catKey, numKey, agg, options) {
+    const A = prepare(G, options), raw = A.raw[numKey];
     const lists = catKey === "genre" ? G.genres : G.platforms;
     const names = new Map((catKey === "genre" ? facets.genres : facets.platforms).map(r => [r.id, r.name]));
     const by = new Map(), all = [];
@@ -177,7 +197,8 @@
   }
 
   /* Two categories: how many games have both (a genre's overlap with itself is genre co-occurrence). */
-  function crossTab(G, facets, rowKey, colKey, show, scoped) {
+  function crossTab(G, facets, rowKey, colKey, show, options) {
+    const scoped = opt(options).scoped;
     const list = key => (key === "genre" ? facets.genres : facets.platforms).slice().sort((p, q) => q.n - p.n || p.name.localeCompare(q.name));
     const rows = list(rowKey).slice(0, 12), cols = list(colKey).slice(0, 12);
     const rowAt = new Map(rows.map((r, i) => [r.id, i])), colAt = new Map(cols.map((c, j) => [c.id, j]));
@@ -195,16 +216,19 @@
   }
 
   /* Every pair among the chosen measures: the correlation matrix. */
-  function correlationMatrix(G, keys, scoped) {
+  function correlationMatrix(G, keys, options) {
     const cells = keys.map(() => keys.map(() => null));
     keys.forEach((a, i) => keys.forEach((b, j) => {
       if (i === j) return;
       const [p, q] = i < j ? [a, b] : [b, a];
-      cells[i][j] = pairData(G, p, q, false, scoped);
+      cells[i][j] = pairData(G, p, q, false, options);
     }));
     return { keys, cells };
   }
 
-  window.IGDB_ANALYSIS = { buildColumns, METRICS, CATEGORIES, isCat, MIN_CAT_N, MIN_RATINGS, MIN_REPORTS, MAX_POINTS,
+  /* What the trim left out: {measure: {lo, hi, dropped, n}} with lo/hi in the measure's own units. */
+  const trimInfo = (G, options) => prepare(G, options).trims;
+
+  window.IGDB_ANALYSIS = { trimInfo, buildColumns, METRICS, CATEGORIES, isCat, MIN_CAT_N, MIN_RATINGS, MIN_REPORTS, MAX_POINTS,
                            strength, scatter, categoryBars, crossTab, correlationMatrix, averageRanks, pearson };
 })();

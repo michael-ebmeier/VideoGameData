@@ -220,6 +220,8 @@
   button.chip { font: inherit; font-size: 13px; cursor: pointer; }
   button.chip:hover { border-color: var(--accent); color: var(--text); }
   .rel-controls { margin-bottom: 6px; }
+  .trim-switch { display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 0; font-size: 13px; cursor: pointer; }
+  .trim-switch input { accent-color: var(--accent); }
   .rel-note { max-width: 90ch; }
   .legend { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 2px; font-size: 11px; color: var(--muted); }
   .legend .lg { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 46px; }
@@ -630,6 +632,14 @@ const PRESETS = [
   ["Genre mix by platform", "platform", "genre"], ["Which genres go together?", "genre", "genre"],
 ];
 const MIN_PAIR_N = 30;
+const aopts = state => ({ scoped: scoped(), trim: state.trim });        // scope + trim, as the analysis wants them
+/* "Time to beat shown from 0.5 h to 180 h; the lowest and highest 1% (412 games) are left out." for the measures involved */
+function trimNote(G, state, keys) {
+  if (!state.trim) return "";
+  const info = IGDB_ANALYSIS.trimInfo(G, aopts(state));
+  return keys.filter((k, i) => info[k] && keys.indexOf(k) === i).map(k =>
+    `${IGDB_ANALYSIS.METRICS[k].label} is limited to ${fmtVal(k, info[k].lo)}–${fmtVal(k, info[k].hi)}: the lowest and highest 1% (${fmt(info[k].dropped)} of ${fmt(info[k].n)} games) are left out. `).join("");
+}
 
 let columnsP = null;
 function getColumns() {
@@ -829,7 +839,7 @@ function scatterTable(res, G) {
 
 /* The correlation matrix card. */
 function matrixCard(G, keys, state, onPick) {
-  const A = IGDB_ANALYSIS, mat = A.correlationMatrix(G, keys, scoped()), labels = keys.map(k => A.METRICS[k].short);
+  const A = IGDB_ANALYSIS, mat = A.correlationMatrix(G, keys, aopts(state)), labels = keys.map(k => A.METRICS[k].short);
   const buttons = [["spearman", "Spearman ρ"], ["pearson", "Pearson r"]].map(([k, t]) => h("button", { type: "button", class: "seg" + (state.method === k ? " on" : ""), text: t,
     onclick: () => { state.method = k; sync(); card.update(spec()); buttons.forEach((b, i) => b.classList.toggle("on", ["spearman", "pearson"][i] === k)); } }));
   const spec = () => ({
@@ -854,7 +864,7 @@ function matrixCard(G, keys, state, onPick) {
     headExtra: h("div", { class: "seg-row" }, buttons) });
   card.append(swatches([["--div-neg-4", `${MINUS}0.7+`], ["--div-neg-3", `${MINUS}0.5`], ["--div-neg-2", `${MINUS}0.3`], ["--div-neg-1", `${MINUS}0.1`], ["--div-0", "0"],
                         ["--div-pos-1", "0.1"], ["--div-pos-2", "0.3"], ["--div-pos-3", "0.5"], ["--div-pos-4", "0.7+"]]),
-    h("p", { class: "chart-sub", text: `Red: one goes down as the other goes up. Blue: they go up together. Each pair uses only the games that have both figures (ratings need ${A.MIN_RATINGS}+ ratings; time to beat needs ${A.MIN_REPORTS}+ reports). Correlation is not cause.` }));
+    h("p", { class: "chart-sub", text: `Red: one goes down as the other goes up. Blue: they go up together. Each pair uses only the games that have both figures (ratings need ${A.MIN_RATINGS}+ ratings; time to beat needs ${A.MIN_REPORTS}+ reports). ${state.trim ? "Time to beat and number of ratings leave out their lowest and highest 1%. " : ""}Correlation is not cause.` }));
   const sync = () => {};
   return card;
 }
@@ -893,23 +903,23 @@ function explorerCard(G, state, onChange) {
     if (!xc && !yc) {
       if (state.x === state.y) { note.textContent = "Choose two different measures to compare."; spec = { draw: h0 => h0.replaceChildren(h("p", { class: "muted", text: "Choose two different measures to compare." })), table: () => h("div") }; }
       else {
-        const res = A.scatter(G, state.x, state.y, scoped());
+        const res = A.scatter(G, state.x, state.y, aopts(state));
         const lg = A.METRICS[state.x].log || A.METRICS[state.y].log;
         note.textContent = res.n < 3 ? `Too few games have data for both ${mname(state.x)} and ${mname(state.y)}.`
           : `${fmt(res.n)} games have data for both ${mname(state.x)} and ${mname(state.y)}. Spearman ρ = ${signed(res.spearman)} (${A.strength(res.spearman)}); Pearson r = ${signed(res.pearson)}${lg ? " on a log scale" : ""}. ` +
-            (res.n > A.MAX_POINTS ? `Dots are a random sample of ${fmt(A.MAX_POINTS)} games; the numbers and the trend line use all ${fmt(res.n)}. ` : "Each dot is a game. ") + "Hover a dot for the game; click to open it. Correlation is not cause.";
+            (res.n > A.MAX_POINTS ? `Dots are a random sample of ${fmt(A.MAX_POINTS)} games; the numbers and the trend line use all ${fmt(res.n)}. ` : "Each dot is a game. ") + "Hover a dot for the game; click to open it. Correlation is not cause. " + trimNote(G, state, [state.x, state.y]);
         spec = { draw: host => (res.n < 3 ? host.replaceChildren(h("p", { class: "muted", text: "Not enough data for this pair in the current dump." })) : drawScatter(host, res, G)), table: () => scatterTable(res, G) };
       }
     } else if (xc !== yc) {
       const catKey = xc ? state.x : state.y, numKey = numK, agg = aggNow;
-      const res = A.categoryBars(G, facets, catKey, numKey, agg, scoped()), word = agg === "median" ? "Median" : "Mean";
+      const res = A.categoryBars(G, facets, catKey, numKey, agg, aopts(state)), word = agg === "median" ? "Median" : "Mean";
       const diff = viewNow === "diff" && res.overall != null;
       const overallText = res.overall != null ? fmtVal(numKey, res.overall) : "";
       const rows = res.rows.map(r => ({ ...r, diff: Math.round((r.value - (res.overall || 0)) * 10) / 10 }));
       if (diff) rows.sort((p, q) => q.diff - p.diff);
       note.textContent = `${word} ${mname(numKey)} by ${catKey}, over ${A.METRICS[numKey].note}. ${catKey === "genre" ? "A game can have several genres" : "A game can be on several platforms"}; ` +
         `${catKey}s with fewer than ${A.MIN_CAT_N} such games are left out${res.omitted ? `, and ${res.omitted} more are not shown (top 20 only)` : ""}. ` +
-        (diff ? `Each bar is the difference from all games (${overallText}): blue above, red below.` : res.overall != null ? `The line marks all games: ${overallText}.` : "");
+        (diff ? `Each bar is the difference from all games (${overallText}): blue above, red below. ` : res.overall != null ? `The line marks all games: ${overallText}. ` : "") + trimNote(G, state, [numKey]);
       const unitText = `${agg} ${mname(numKey)}`;
       spec = {
         draw: host => (!rows.length ? host.replaceChildren(h("p", { class: "muted", text: "No category has enough games for this measure." }))
@@ -919,7 +929,7 @@ function explorerCard(G, state, onChange) {
           h("tbody", {}, rows.map(r => h("tr", {}, h("td", { text: r.label }), h("td", { text: fmt(r.n) }), h("td", { text: fmtVal(numKey, r.value) }), h("td", { text: signedVal(r.diff, numKey) }))))),
       };
     } else {
-      const res = A.crossTab(G, facets, state.y, state.x, state.show, scoped()), pct = state.show === "pct", same = state.x === state.y;
+      const res = A.crossTab(G, facets, state.y, state.x, state.show, aopts(state)), pct = state.show === "pct", same = state.x === state.y;
       const max = Math.max(1, ...res.cells.flat().map((v, k) => (pct ? res.pct[Math.floor(k / res.cols.length)][k % res.cols.length] : v)));
       note.textContent = same
         ? `${pct ? "Of the games in each row's genre, the share that also have the column's genre" : "Games that have both genres"}. The diagonal is the genre's own total.`
@@ -945,15 +955,19 @@ function explorerCard(G, state, onChange) {
 }
 
 function relationshipsSection(params) {
-  const state = { x: params.get("x") || "", y: params.get("y") || "", agg: params.get("agg") || "", view: params.get("view") || "", show: params.get("show") === "pct" ? "pct" : "count",
+  const state = { x: params.get("x") || "", y: params.get("y") || "", agg: params.get("agg") || "", view: params.get("view") || "", trim: params.get("trim") !== "0", show: params.get("show") === "pct" ? "pct" : "count",
                   method: params.get("m") === "pearson" ? "pearson" : "spearman" };
   const hasTtb = !!facets.has_time_to_beat;
   if (!state.x) state.x = hasTtb ? "ttb" : "year";
   if (!state.y) state.y = "rating";
   const slot = h("div", { class: "rel-slot" }, h("p", { class: "muted", text: "Loading the relationship analysis…" }));
+  const trimBox = h("input", { type: "checkbox", checked: state.trim, onchange: e => { state.trim = e.target.checked; keep(); load(); } });
   const section = h("section", { class: "rel-section" }, h("h2", { class: "section-title", text: "Relationships" }),
-    h("p", { class: "muted", text: "How genre, rating, time to beat, release year and popularity relate to each other." }), slot);
-  const keep = () => { const q = new URLSearchParams({ x: state.x, y: state.y }); if (state.agg) q.set("agg", state.agg); if (state.show === "pct") q.set("show", "pct"); if (state.view) q.set("view", state.view); if (state.method === "pearson") q.set("m", "pearson");
+    h("p", { class: "muted", text: "How genre, rating, time to beat, release year and popularity relate to each other." }),
+    h("label", { class: "trim-switch", title: "Ignores the lowest 1% and highest 1% of time to beat and of number of ratings, so a few extreme or mistaken entries don't stretch the charts." },
+      trimBox, " Trim extremes ", h("span", { class: "muted", text: "(ignore the lowest and highest 1% of time to beat and number of ratings)" })),
+    slot);
+  const keep = () => { const q = new URLSearchParams({ x: state.x, y: state.y }); if (state.agg) q.set("agg", state.agg); if (state.show === "pct") q.set("show", "pct"); if (state.view) q.set("view", state.view); if (!state.trim) q.set("trim", "0"); if (state.method === "pearson") q.set("m", "pearson");
     history.replaceState(null, "", "#/stats?" + q); };
   const load = async () => {
     try {

@@ -113,6 +113,13 @@ as the difference from all games), and two categories give a grid of how many ga
 numbers are calculated in the browser (`explorer/static/analysis.js`) from the games table, so this
 needs no extra data.
 
+A **Trim extremes** switch (on by default) leaves out the lowest and highest 1% of time to beat and
+of number of ratings, so a few extreme or mistaken entries (a game that "takes" 100,000 hours) don't
+stretch the axes and flatten the pattern. It applies to the matrix, the scatter plots and the bar
+charts alike, the notes say exactly which range is shown and how many games were left out, and
+turning it off (or `trim=0` in the page address) shows everything. Rating and release year are not
+trimmed, because their ranges are bounded and trimming would drop real games.
+
 ## Putting it on a website
 
 The explorer can be built as a **static website**: plain files you can host anywhere, with no
